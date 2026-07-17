@@ -1,0 +1,8 @@
+{
+  "indicator": "zscore",
+  "window": 5,
+  "input": {"series": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+  "expected": [null, null, null, null, 1.2649110640673518, 1.2649110640673518, 1.2649110640673518, 1.2649110640673518, 1.2649110640673518, 1.2649110640673518],
+  "tolerance": "rel=1e-9",
+  "derivation": "C9: window=5 including the current value, sample stdev (ddof=1). At index4 window=[1,2,3,4,5], mean=3, sum of squared deviations = (-2)^2+(-1)^2+0^2+1^2+2^2 = 4+1+0+1+4 = 10, sample variance = 10/(5-1) = 2.5, stdev = sqrt(2.5) = 1.5811388300841898. z[4] = (5-3)/1.5811388300841898 = 2/1.5811388300841898 = 1.2649110640673518. Because the series is a uniform +1 ramp, every subsequent 5-window is just a shifted copy with the same variance and the same (last_value - mean) = 2, so z is constant = 1.2649110640673518 for all index >= 4. First 4 entries are NaN warmup (window not yet full)."
+}

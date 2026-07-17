@@ -1,0 +1,13 @@
+{
+  "indicator": "adx",
+  "period": 14,
+  "input": {
+    "high": [100.7, 101.3, 102.0, 102.5, 103.1, 103.8, 104.3, 104.9, 105.6, 106.1, 106.7, 107.4, 107.9, 108.5, 109.2, 109.7, 110.3, 111.0, 111.5, 112.1, 112.8, 113.3, 113.9, 114.6, 115.1, 115.7, 116.4, 116.9, 117.5, 118.2],
+    "low": [99.8, 100.3, 100.9, 101.6, 102.1, 102.7, 103.4, 103.9, 104.5, 105.2, 105.7, 106.3, 107.0, 107.5, 108.1, 108.8, 109.3, 109.9, 110.6, 111.1, 111.7, 112.4, 112.9, 113.5, 114.2, 114.7, 115.3, 116.0, 116.5, 117.1],
+    "close": [100.5, 101.1, 101.8, 102.3, 102.9, 103.6, 104.1, 104.7, 105.4, 105.9, 106.5, 107.2, 107.7, 108.3, 109.0, 109.5, 110.1, 110.8, 111.3, 111.9, 112.6, 113.1, 113.7, 114.4, 114.9, 115.5, 116.2, 116.7, 117.3, 118.0]
+  },
+  "expected_nan_through_index": 26,
+  "spot_check": {"27": 100.0, "28": 100.0, "29": 100.0},
+  "tolerance": "rel=1e-9",
+  "derivation": "Spot-check per plan (long period 14, not fully hand-digit-verified): this is a strictly monotonic uptrend (every bar's low and high both rise), so -DM is always 0 and +DM is always positive -> +DI dominates -DI completely -> DX saturates at 100 for every bar once the Wilder warmup completes, and ADX (itself a Wilder average of DX) also saturates at 100. Warmup: +DM/-DM/ATR need a first run of 14 consecutive non-NaN values starting at index1 (index0's diff is NaN) -> first DX at index14. ADX is a second Wilder smoothing of DX needing another 14-value run of non-NaN DX starting at index14 -> first non-NaN ADX at index 14+14-1=27, matching the computed NaN-through-index=26 boundary. Values past warmup are read directly from the implementation (bot.indicators.adx.adx) and asserted for regression, consistent with the plan's spot-check + NaN-warmup rule for periods >= 14."
+}

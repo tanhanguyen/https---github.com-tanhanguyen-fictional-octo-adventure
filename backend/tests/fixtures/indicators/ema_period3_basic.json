@@ -1,0 +1,8 @@
+{
+  "indicator": "ema",
+  "period": 3,
+  "input": {"close": [1, 2, 3, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+  "expected": [null, null, 2.0, 2.0, 2.5, 3.25, 4.125, 5.0625, 6.03125, 7.015625, 8.0078125, 9.00390625],
+  "tolerance": "rel=1e-9",
+  "derivation": "C8: seed at index period-1=2 is SMA(close[0:3]) = (1+2+3)/3 = 2.0. alpha = 2/(period+1) = 0.5. index3: 0.5*close[3] + 0.5*seed = 0.5*2 + 0.5*2.0 = 2.0. index4: 0.5*3 + 0.5*2.0 = 2.5. index5: 0.5*4 + 0.5*2.5 = 3.25. index6: 0.5*5+0.5*3.25=4.125. Recursion continues identically (each term is deterministic given the previous, alpha fixed): index7=0.5*6+0.5*4.125=5.0625, index8=0.5*7+0.5*5.0625=6.03125, index9=0.5*8+0.5*6.03125=7.015625, index10=0.5*9+0.5*7.015625=8.0078125, index11=0.5*10+0.5*8.0078125=9.00390625."
+}

@@ -1,0 +1,117 @@
+# Seed config — checked-in defaults + schema documentation (DB is runtime source of truth).
+# Mirrors bot.config.models.BotConfig. D2: single parameter set, SYMBOL_TYPE=FOREX, TIMEFRAME=1H.
+symbol: EURUSD
+symbol_type: FOREX
+timeframe: "1H"
+starting_equity: 10000.0
+trading_day_rollover_tz: America/New_York   # C3
+trading_day_rollover_time: "17:00"
+
+risk:
+  max_risk_per_trade_pct: 1.0               # C7
+  retest_tolerance_mode: atr                # D5
+  retest_tolerance_atr_mult: 0.25
+  retest_tolerance_percent: 0.003
+  retest_max_bars: 5                        # C6
+  intrabar_priority: sl_first
+  cancel_if_open_beyond_sl: true
+  allow_short: true
+
+strategies:
+  breakout:
+    enabled: true
+    range_period: 20
+    tp1_r: 1.5
+    tp2_r: 3.0
+    partial_fraction: 0.5
+  mean_reversion:
+    enabled: true
+    rsi_period: 14
+    rsi_overbought: 70.0
+    rsi_oversold: 30.0
+    mr_sl_atr_period: 5
+    mr_sl_atr_mult: 1.0
+
+filters:
+  trend:
+    enabled: true
+    ema_fast: 34
+    ema_slow: 89
+  adx_filter:
+    enabled: true
+    period: 14
+    threshold_trend: 30.0
+    threshold_range: 25.0
+  er_filter:
+    enabled: true
+    period: 10
+    threshold_trend: 0.6
+    threshold_range: 0.3
+  atr_ref:
+    enabled: true
+    locked: true
+    period14: 14
+    period5: 5
+  atr_zscore:
+    enabled: true
+    window: 100
+    z_off_low: -1.5
+    z_breakout_only: 2.0
+    z_mid_low: 1.0
+    sl_scale_high: 1.5
+    sl_scale_mid: 1.5
+    sl_scale_normal: 1.0
+  volume:
+    enabled: false                          # off for FOREX
+    period: 20
+    multiplier: 1.5
+  session:
+    enabled: true
+    forex_crypto:
+      - tz: Europe/London
+        start: "08:00"
+        end: "17:00"
+      - tz: America/New_York
+        start: "08:00"
+        end: "17:00"
+    stock_vn:
+      - tz: Asia/Ho_Chi_Minh
+        start: "09:00"
+        end: "11:30"
+      - tz: Asia/Ho_Chi_Minh
+        start: "13:00"
+        end: "14:30"
+  mtf:
+    enabled: true
+    block_on_neutral: false
+  dxy:
+    enabled: true
+    change_threshold_pct: 0.2
+    lookback_hours: 1
+  confirmation_lag:
+    enabled: true
+  equity_curve:
+    enabled: true
+    win_streak_trigger: 3
+    loss_streak_trigger: 2
+    win_reduce_to: 0.5
+    loss_reduce_to: 0.3
+  time_stop:
+    enabled: true
+    hours: 8.0
+    after_tp1: false                        # C5
+  range_width:
+    enabled: true
+    atr_mult: 1.5
+  account_risk:
+    enabled: true
+    max_concurrent_trades: 3
+    daily_max_losses: 3
+    daily_loss_limit_enabled: true
+    one_trade_per_symbol: true               # Phase 1/2 gap default
+  wick:
+    enabled: true
+    min_ratio: 0.5                           # D4
+  news:
+    enabled: false
+    blacklist_utc: []

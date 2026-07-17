@@ -1,0 +1,35 @@
+{
+  "indicator": "wick_ratio",
+  "cases": [
+    {
+      "name": "buy_strong_lower_wick_passes",
+      "open": 10, "high": 10.2, "low": 9.0, "close": 10.1, "side": "BUY",
+      "expected": 0.8333333333333338,
+      "derivation": "range=1.2, body_bottom=min(10,10.1)=10, lower_wick=10-9.0=1.0, ratio=1.0/1.2=0.83333."
+    },
+    {
+      "name": "buy_thin_wick_fails",
+      "open": 10, "high": 10.5, "low": 9.9, "close": 10.4, "side": "BUY",
+      "expected": 0.16666666666666619,
+      "derivation": "range=0.6, body_bottom=10, lower_wick=10-9.9=0.1, ratio=0.1/0.6=0.16667 < WICK_MIN_RATIO=0.5 -> fails."
+    },
+    {
+      "name": "sell_strong_upper_wick_passes",
+      "open": 10, "high": 11.0, "low": 9.8, "close": 10.1, "side": "SELL",
+      "expected": 0.7500000000000008,
+      "derivation": "range=1.2, body_top=max(10,10.1)=10.1, upper_wick=11.0-10.1=0.9, ratio=0.9/1.2=0.75."
+    },
+    {
+      "name": "boundary_exactly_min_ratio",
+      "open": 10, "high": 10.5, "low": 9.5, "close": 10, "side": "BUY",
+      "expected": 0.5,
+      "derivation": "range=1.0, body_bottom=10, lower_wick=10-9.5=0.5, ratio=0.5/1.0=0.5 -- exact WICK_MIN_RATIO boundary, filter uses >= so this passes."
+    },
+    {
+      "name": "high_equals_low_zero_ratio",
+      "open": 10, "high": 10, "low": 10, "close": 10, "side": "BUY",
+      "expected": 0.0,
+      "derivation": "range=0 -> ratio defined as 0 per D4 (docs/decisions.md), avoids division by zero."
+    }
+  ]
+}

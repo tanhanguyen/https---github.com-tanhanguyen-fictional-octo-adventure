@@ -1,0 +1,8 @@
+{
+  "indicator": "efficiency_ratio",
+  "period": 10,
+  "input": {"close": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]},
+  "expected": [null, null, null, null, null, null, null, null, null, null, 1.0, 1.0, 1.0, 1.0, 1.0],
+  "tolerance": "rel=1e-9",
+  "derivation": "Perfectly monotonic +1/bar series: every |diff|=1, so noise[i] = sum of 10 unit diffs = 10 once the rolling window is fully populated. movement[i] = |close[i]-close[i-10]| = 10 for the same reason (10 unit steps between the two points). er = movement/noise = 10/10 = 1.0 for every fully-formed window -- ER=1.0 exactly represents a maximally efficient (perfectly smooth) trend, as expected. Warmup: close.diff() is NaN at index0, so a full window of 10 non-NaN diffs first exists at index10 (indices 1..10); movement[i] needs close.shift(10) which is only non-NaN from index10 onward -- both warmup boundaries agree, giving NaN through index9 and 1.0 from index10."
+}

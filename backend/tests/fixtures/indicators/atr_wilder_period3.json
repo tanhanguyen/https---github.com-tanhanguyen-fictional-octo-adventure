@@ -1,0 +1,13 @@
+{
+  "indicator": "atr",
+  "period": 3,
+  "input": {
+    "high": [10, 11, 12, 11, 12, 13, 14, 15, 16, 17],
+    "low":  [9, 10, 11, 10, 11, 12, 13, 14, 15, 16],
+    "close":[9.5, 10.5, 11.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5, 16.5]
+  },
+  "expected": [null, null, 1.3333333333333333, 1.3888888888888888, 1.425925925925926, 1.4506172839506175, 1.4670781893004117, 1.4780521262002746, 1.4853680841335164, 1.4902453894223444],
+  "tolerance": "rel=1e-9",
+  "spot_check_from_index": 4,
+  "derivation": "TR[0] = high[0]-low[0] (no prior close) = 1.0. TR[1] = max(11-10=1, |11-9.5|=1.5, |10-9.5|=0.5) = 1.5. TR[2] = max(12-11=1, |12-10.5|=1.5, |11-10.5|=0.5) = 1.5. TR[3] = max(11-10=1, |11-11.5|=0.5, |10-11.5|=1.5) = 1.5. Seed at index period-1=2: SMA(TR[0:3]) = (1.0+1.5+1.5)/3 = 4/3 = 1.333333333. Wilder alpha=1/3. index3: (1/3)*1.5 + (2/3)*1.333333333 = 0.5+0.888888889 = 1.388888889 -- matches expected[3]. Remaining indices follow the same recursion (values[4..9] are spot-checked against the recursion formula, not independently hand-derived digit by digit, per plan's 'spot-check + NaN warmup' rule for indices beyond the short hand-checkable window)."
+}
