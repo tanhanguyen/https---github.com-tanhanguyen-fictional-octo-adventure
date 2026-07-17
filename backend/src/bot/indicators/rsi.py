@@ -1,4 +1,5 @@
 """Relative Strength Index, Wilder-smoothed (C8)."""
+
 from __future__ import annotations
 
 import numpy as np

@@ -1,6 +1,7 @@
 """Fixture-driven indicator tests. Ground truth = hand-derived fixtures under
 tests/fixtures/indicators/*.json (see docs/decisions.md for the derivations).
 Not cross-checked against ta-lib/pandas-ta by design (plan constraint)."""
+
 from __future__ import annotations
 
 import json

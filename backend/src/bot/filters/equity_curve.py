@@ -1,4 +1,5 @@
 """Filter 11 — Equity curve (MODIFIER). §6.2: streak-based risk_multiplier."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult
@@ -22,7 +23,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         risk_multiplier = 1.0
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.MODIFIER, enabled=True, evaluated=True, passed=None,
+        id=FILTER_ID,
+        kind=FilterKind.MODIFIER,
+        enabled=True,
+        evaluated=True,
+        passed=None,
         blocking=False,
         values={
             "risk_multiplier": risk_multiplier,

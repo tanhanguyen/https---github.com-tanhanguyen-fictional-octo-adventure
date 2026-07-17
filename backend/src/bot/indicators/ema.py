@@ -1,4 +1,5 @@
 """EMA34/89 style exponential moving average (C8): alpha=2/(period+1), seeded with SMA."""
+
 from __future__ import annotations
 
 import pandas as pd

@@ -1,5 +1,6 @@
 """Filter registry: ordered list of all 16 filters, split into Phase A (unconditional)
 and Phase B (need signal.direction) per the plan's decision-log section."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterResult

@@ -2,6 +2,7 @@
 non-NaN values, then recurse with the given alpha. EMA34/89 use alpha=2/(period+1);
 ATR/ADX/RSI (Wilder) use alpha=1/period. Warmup is NaN, never 0.
 """
+
 from __future__ import annotations
 
 import numpy as np

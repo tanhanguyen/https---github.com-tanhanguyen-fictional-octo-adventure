@@ -1,4 +1,5 @@
 """Pure candle geometry helpers used by strategies/filters (e.g. wick ratio, D4)."""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -20,9 +21,7 @@ def is_bullish(open_: pd.Series, close: pd.Series) -> pd.Series:
     return close > open_
 
 
-def wick_ratio(
-    open_: float, high: float, low: float, close: float, side: str
-) -> float:
+def wick_ratio(open_: float, high: float, low: float, close: float, side: str) -> float:
     """Ratio of the wick opposite to `side` ("BUY"/"SELL") over the candle range (D4).
 
     BUY (looking for rejection of the downside) -> lower wick / range.

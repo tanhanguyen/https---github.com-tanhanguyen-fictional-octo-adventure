@@ -3,9 +3,10 @@
 D2: single parameter set (no per-asset-type table). D3: 16 independent filter toggles
 (mapping in docs/decisions.md). D9: session windows per SYMBOL_TYPE. D11: 4 symbol types.
 """
+
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -246,5 +247,5 @@ class ConfigVersion(StrictModel):
     version: int
     config: BotConfig
     is_active: bool = True
-    created_at_utc: Optional[str] = None
+    created_at_utc: str | None = None
     note: str = ""

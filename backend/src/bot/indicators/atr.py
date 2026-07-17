@@ -1,4 +1,5 @@
 """Average True Range, Wilder-smoothed (C8)."""
+
 from __future__ import annotations
 
 import pandas as pd

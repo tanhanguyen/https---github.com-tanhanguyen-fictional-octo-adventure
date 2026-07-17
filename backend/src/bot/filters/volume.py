@@ -1,4 +1,5 @@
 """Filter 6 — Volume (GATE, off by default for FOREX). Only meaningful for BREAKOUT signals."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult, StrategyName
@@ -14,13 +15,25 @@ def evaluate(ctx: FilterContext) -> FilterResult:
 
     if ctx.signal is None:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=None,
-            blocking=False, values={}, detail="no signal yet",
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=None,
+            blocking=False,
+            values={},
+            detail="no signal yet",
         )
     if ctx.signal.strategy != StrategyName.BREAKOUT:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=True,
-            blocking=False, values={}, detail="not applicable (mean reversion)",
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=True,
+            blocking=False,
+            values={},
+            detail="not applicable (mean reversion)",
         )
 
     vol = ctx.volume.iloc[-1]
@@ -31,7 +44,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
     threshold = cfg.multiplier * vol_ma
     ok = vol > threshold
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=ok,
+        id=FILTER_ID,
+        kind=FilterKind.GATE,
+        enabled=True,
+        evaluated=True,
+        passed=ok,
         blocking=not ok,
         values={"volume": vol, "volume_ma": vol_ma, "threshold": threshold},
         detail=f"volume {vol:.1f} vs {threshold:.1f}",

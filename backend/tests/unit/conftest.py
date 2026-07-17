@@ -34,7 +34,11 @@ def base_ctx() -> FilterContext:
     from bot.indicators.zscore import zscore
 
     close_s, high_s, low_s, open_s, vol_s = (
-        _series(close), _series(high), _series(low), _series(open_), _series(volume)
+        _series(close),
+        _series(high),
+        _series(low),
+        _series(open_),
+        _series(volume),
     )
     atr14 = atr(high_s, low_s, close_s, 14)
     atr5 = atr(high_s, low_s, close_s, 5)
@@ -43,18 +47,30 @@ def base_ctx() -> FilterContext:
         config=cfg,
         now=datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc),  # Monday 10:00 UTC -> London session
         symbol="EURUSD",
-        open_=open_s, high=high_s, low=low_s, close=close_s, volume=vol_s,
-        ema_fast_close=ema(close_s, 34), ema_fast_high=ema(high_s, 34), ema_fast_low=ema(low_s, 34),
+        open_=open_s,
+        high=high_s,
+        low=low_s,
+        close=close_s,
+        volume=vol_s,
+        ema_fast_close=ema(close_s, 34),
+        ema_fast_high=ema(high_s, 34),
+        ema_fast_low=ema(low_s, 34),
         ema_slow_close=ema(close_s, 89),
         adx=adx(high_s, low_s, close_s, 14),
         er=efficiency_ratio(close_s, 10),
         rsi=rsi(close_s, 14),
-        atr14=atr14, atr5=atr5,
+        atr14=atr14,
+        atr5=atr5,
         atr_zscore=zscore(atr14, 100),
         volume_ma=sma(vol_s, 20),
         signal=None,
-        open_trades_count=0, daily_loss_count=0, consecutive_wins=0, consecutive_losses=0,
+        open_trades_count=0,
+        daily_loss_count=0,
+        consecutive_wins=0,
+        consecutive_losses=0,
         equity=10_000.0,
-        htf_ema_fast_close=None, htf_ema_slow_close=None, htf_timeframe="4H",
+        htf_ema_fast_close=None,
+        htf_ema_slow_close=None,
+        htf_timeframe="4H",
         dxy_change_1h_pct=0.0,
     )

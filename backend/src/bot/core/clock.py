@@ -2,6 +2,7 @@
 
 datetime.now()/time.time() are banned in engine code; test_no_wallclock greps for them.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

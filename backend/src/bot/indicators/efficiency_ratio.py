@@ -1,4 +1,5 @@
 """Kaufman-style Efficiency Ratio (§6.3): |close[i]-close[i-period]| / sum(|close diffs|)."""
+
 from __future__ import annotations
 
 import numpy as np

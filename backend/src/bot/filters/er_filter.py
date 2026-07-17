@@ -1,4 +1,5 @@
 """Filter 3 — Efficiency Ratio (REGIME). ER>threshold_trend -> smooth; <threshold_range -> noisy."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult
@@ -24,7 +25,12 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         regime = "transition"
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.REGIME, enabled=True, evaluated=True, passed=None,
-        blocking=False, values={"er": value, "regime": regime},
+        id=FILTER_ID,
+        kind=FilterKind.REGIME,
+        enabled=True,
+        evaluated=True,
+        passed=None,
+        blocking=False,
+        values={"er": value, "regime": regime},
         detail=f"ER {value:.3f} -> {regime}",
     )

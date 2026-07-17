@@ -4,6 +4,7 @@ Timeframes: 15m, 1H, 4H, 1D, 1W. Bars are keyed by OPEN timestamp (UTC).
 1D/1W bars anchor at the trading-day rollover (17:00 America/New_York) so daily
 candles and the trading day share one boundary.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
@@ -35,8 +36,9 @@ def higher_tf(tf: str) -> str | None:
     return TIMEFRAME_HIERARCHY[tf]
 
 
-def trading_day(ts: datetime, rollover_tz: str = "America/New_York",
-                rollover_time: str = "17:00") -> date:
+def trading_day(
+    ts: datetime, rollover_tz: str = "America/New_York", rollover_time: str = "17:00"
+) -> date:
     """Trading day containing ts. A trading day named D runs from 17:00 NY on D-1
     to 17:00 NY on D (C3): at/after the rollover instant we are in the NEXT day."""
     if ts.tzinfo is None:

@@ -2,6 +2,7 @@
 
 F3: the one-trade-per-symbol block itself must emit reason=max_concurrent_trades_reached,
 stage=one_trade_per_symbol so that reason is reachable with a single symbol (Phase 1/2)."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult
@@ -17,37 +18,64 @@ def evaluate(ctx: FilterContext) -> FilterResult:
 
     if cfg.daily_loss_limit_enabled and ctx.daily_loss_count >= cfg.daily_max_losses:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=False,
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=False,
             blocking=True,
             values={
-                "daily_loss_count": ctx.daily_loss_count, "daily_max_losses": cfg.daily_max_losses,
-                "reason": "daily_loss_limit_reached", "stage": "account_risk",
+                "daily_loss_count": ctx.daily_loss_count,
+                "daily_max_losses": cfg.daily_max_losses,
+                "reason": "daily_loss_limit_reached",
+                "stage": "account_risk",
             },
             detail="daily_loss_limit_reached",
         )
 
     if cfg.one_trade_per_symbol and ctx.open_trades_count >= 1:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=False,
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=False,
             blocking=True,
-            values={"open_trades_count": ctx.open_trades_count, "reason": "max_concurrent_trades_reached",
-                     "stage": "one_trade_per_symbol"},
+            values={
+                "open_trades_count": ctx.open_trades_count,
+                "reason": "max_concurrent_trades_reached",
+                "stage": "one_trade_per_symbol",
+            },
             detail="one_trade_per_symbol blocking (open trade present)",
         )
 
     if ctx.open_trades_count >= cfg.max_concurrent_trades:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=False,
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=False,
             blocking=True,
-            values={"open_trades_count": ctx.open_trades_count,
-                     "max_concurrent_trades": cfg.max_concurrent_trades,
-                     "reason": "max_concurrent_trades_reached", "stage": "account_risk"},
+            values={
+                "open_trades_count": ctx.open_trades_count,
+                "max_concurrent_trades": cfg.max_concurrent_trades,
+                "reason": "max_concurrent_trades_reached",
+                "stage": "account_risk",
+            },
             detail="max_concurrent_trades_reached",
         )
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=True,
+        id=FILTER_ID,
+        kind=FilterKind.GATE,
+        enabled=True,
+        evaluated=True,
+        passed=True,
         blocking=False,
-        values={"open_trades_count": ctx.open_trades_count, "daily_loss_count": ctx.daily_loss_count},
+        values={
+            "open_trades_count": ctx.open_trades_count,
+            "daily_loss_count": ctx.daily_loss_count,
+        },
         detail="ok",
     )

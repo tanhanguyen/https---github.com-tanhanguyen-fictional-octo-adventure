@@ -1,5 +1,6 @@
 """Z-score of a series over a rolling window (C9): sample stdev (ddof=1), window
 includes the current value."""
+
 from __future__ import annotations
 
 import pandas as pd

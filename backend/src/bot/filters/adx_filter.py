@@ -1,4 +1,5 @@
 """Filter 2 — ADX (REGIME). ADX>threshold_trend -> trend regime; <threshold_range -> range."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult
@@ -24,7 +25,12 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         regime = "transition"
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.REGIME, enabled=True, evaluated=True, passed=None,
-        blocking=False, values={"adx": value, "regime": regime},
+        id=FILTER_ID,
+        kind=FilterKind.REGIME,
+        enabled=True,
+        evaluated=True,
+        passed=None,
+        blocking=False,
+        values={"adx": value, "regime": regime},
         detail=f"ADX {value:.2f} -> {regime}",
     )

@@ -1,6 +1,7 @@
 """Filter 10 — Confirmation lag (GATE, Phase B). D6/C2: fill convention never changes;
 this only decides whether the just-closed bar *confirms* the signal direction, using
 §6.1 semantics (close[-1] vs close[-2]) per docs/decisions.md deviation #14."""
+
 from __future__ import annotations
 
 from bot.core.types import Direction, FilterKind, FilterResult
@@ -16,8 +17,14 @@ def evaluate(ctx: FilterContext) -> FilterResult:
 
     if ctx.signal is None:
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=None,
-            blocking=False, values={}, detail="no signal yet",
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=None,
+            blocking=False,
+            values={},
+            detail="no signal yet",
         )
 
     if len(ctx.close) < 2:
@@ -34,7 +41,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         ok = close_confirm < close_signal
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=ok,
+        id=FILTER_ID,
+        kind=FilterKind.GATE,
+        enabled=True,
+        evaluated=True,
+        passed=ok,
         blocking=not ok,
         values={"close_confirm": close_confirm, "close_signal": close_signal},
         detail="confirmed" if ok else "not confirmed",

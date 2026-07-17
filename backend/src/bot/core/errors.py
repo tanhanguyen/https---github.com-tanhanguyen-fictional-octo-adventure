@@ -1,4 +1,5 @@
 """Domain errors."""
+
 from __future__ import annotations
 
 

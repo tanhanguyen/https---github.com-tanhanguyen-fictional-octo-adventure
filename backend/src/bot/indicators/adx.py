@@ -1,4 +1,5 @@
 """Average Directional Index, Wilder-smoothed throughout (C8)."""
+
 from __future__ import annotations
 
 import numpy as np

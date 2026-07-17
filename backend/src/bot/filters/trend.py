@@ -1,4 +1,5 @@
 """Filter 1 — Trend (REGIME). §3: BULL/BEAR/NEUTRAL from EMA34 channel vs EMA89."""
+
 from __future__ import annotations
 
 from bot.core.types import FilterKind, FilterResult, Mode
@@ -29,11 +30,18 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         mode = Mode.NEUTRAL
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.REGIME, enabled=True, evaluated=True, passed=None,
+        id=FILTER_ID,
+        kind=FilterKind.REGIME,
+        enabled=True,
+        evaluated=True,
+        passed=None,
         blocking=False,
         values={
-            "mode": mode.value, "close": close, "ema_fast_high": ema_fast_high,
-            "ema_fast_low": ema_fast_low, "ema_fast_close": ema_fast_close,
+            "mode": mode.value,
+            "close": close,
+            "ema_fast_high": ema_fast_high,
+            "ema_fast_low": ema_fast_low,
+            "ema_fast_close": ema_fast_close,
             "ema_slow_close": ema_slow_close,
         },
         detail=f"mode={mode.value}",

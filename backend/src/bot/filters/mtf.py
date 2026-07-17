@@ -1,6 +1,7 @@
 """Filter 8 — Multi-timeframe (GATE, Phase B). §6.5. Caller must supply
 ctx.htf_ema_fast_close/htf_ema_slow_close already lookahead-filtered per C11 —
 this module only compares already-closed HTF bars, it does not fetch/filter bars."""
+
 from __future__ import annotations
 
 from bot.core.types import Direction, FilterKind, FilterResult
@@ -25,8 +26,14 @@ def evaluate(ctx: FilterContext) -> FilterResult:
     if ctx.htf_timeframe is None:
         # Already at the highest timeframe (Weekly) -- nothing to reconcile against.
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=True,
-            blocking=False, values={}, detail="no higher timeframe (already at top)",
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=True,
+            blocking=False,
+            values={},
+            detail="no higher timeframe (already at top)",
         )
 
     if ctx.htf_ema_fast_close is None or ctx.htf_ema_slow_close is None:
@@ -40,7 +47,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
             return warmup_result(FILTER_ID, FilterKind.GATE)
         htf_trend = _htf_trend(fast, slow)
         return FilterResult(
-            id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=None,
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=None,
             blocking=False,
             values={"htf": ctx.htf_timeframe, "htf_trend": htf_trend},
             detail=f"htf={ctx.htf_timeframe} trend={htf_trend} (no signal yet)",
@@ -61,7 +72,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         blocked = True
 
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=not blocked,
+        id=FILTER_ID,
+        kind=FilterKind.GATE,
+        enabled=True,
+        evaluated=True,
+        passed=not blocked,
         blocking=blocked,
         values={"htf": ctx.htf_timeframe, "htf_trend": htf_trend, "direction": direction.value},
         detail=f"htf={ctx.htf_timeframe} trend={htf_trend} vs {direction.value}",

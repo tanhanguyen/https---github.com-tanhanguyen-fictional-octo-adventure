@@ -1,10 +1,11 @@
 """Shared value types. Pure — no I/O, no engine imports."""
+
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 class Direction(str, enum.Enum):
@@ -71,8 +72,8 @@ class Signal:
     strategy: StrategyName
     signal_bar_ts: datetime
     # Breakout only:
-    range_high: Optional[float] = None
-    range_low: Optional[float] = None
+    range_high: float | None = None
+    range_low: float | None = None
 
 
 @dataclass(frozen=True)
@@ -82,9 +83,9 @@ class TPRules:
     kind ABSOLUTE:   tp1 = fixed price known at decision time (mean reversion)."""
 
     kind: str  # "R_MULTIPLE" | "ABSOLUTE"
-    tp1_r: Optional[float] = None
-    tp2_r: Optional[float] = None
-    tp1_abs: Optional[float] = None
+    tp1_r: float | None = None
+    tp2_r: float | None = None
+    tp1_abs: float | None = None
     partial_fraction: float = 0.5
     move_be_after_tp1: bool = False
 
@@ -95,7 +96,7 @@ class FilterResult:
     kind: FilterKind
     enabled: bool
     evaluated: bool
-    passed: Optional[bool]  # None: disabled, warmup, or informational (no verdict)
+    passed: bool | None  # None: disabled, warmup, or informational (no verdict)
     blocking: bool = False
     values: dict[str, Any] = field(default_factory=dict)
     detail: str = ""

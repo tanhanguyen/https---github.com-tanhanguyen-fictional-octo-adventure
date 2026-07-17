@@ -1,4 +1,5 @@
 """Filter 16 — News blackout (GATE, off by default). Empty blacklist -> never blocks."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -26,7 +27,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
 
     blocked = _in_blackout(ctx.now, cfg.blacklist_utc)
     return FilterResult(
-        id=FILTER_ID, kind=FilterKind.GATE, enabled=True, evaluated=True, passed=not blocked,
+        id=FILTER_ID,
+        kind=FilterKind.GATE,
+        enabled=True,
+        evaluated=True,
+        passed=not blocked,
         blocking=blocked,
         values={"blacklist_count": len(cfg.blacklist_utc)},
         detail="news blackout" if blocked else "ok",
