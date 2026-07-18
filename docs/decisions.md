@@ -111,8 +111,59 @@ Không cross-check ta-lib/pandas-ta: công thức §6 + C8 là chân lý.
 
 ## Quyết định phát sinh trong Phase 2/3 (chưa có ở trên, ghi bổ sung)
 
-- **Lot size chốt lúc quyết định, dùng entry ước lượng = `close[-1]`** — deviation #7 nói "TP/lot chốt lúc khớp", nhưng kiến trúc hiện tại (`main_loop.decide` tính `OpenTrade.lot_size` trước khi `order_engine` fill) tính lot ngay tại quyết định, dùng `sl_distance = |close[-1] - sl|` làm xấp xỉ cho `|entry - sl|` thật. Với dữ liệu H1 forex synthetic (không gap lớn giữa close và open kế tiếp), sai số nhỏ. TP thì vẫn đúng như dự định — chốt lúc khớp (`order_engine` resolve `tp1/tp2` từ `TPRules` dùng `entry` thật). Nếu cần đúng 100% theo dự định gốc, chuyển việc gọi `risk_manager.calculate_lot` vào trong `OrderEngine.process_bar` nhánh `PENDING`, dùng `entry` vừa fill — chưa làm vì đổi kiến trúc khá lớn ở giai đoạn cuối, ghi nhận là nợ kỹ thuật.
-- **`INTRABAR_PRIORITY="path"` là xấp xỉ, chưa dùng sub-bar path thật** — `order_engine._bar_exit` với `priority="path"` chọn mốc (SL hay TP) gần `open` hơn làm proxy, KHÔNG đọc lại chuỗi 15 sub-step đã sinh trong `synthetic.py`. Lý do: `OrderEngine` hiện chỉ nhận `Bar` (OHLC đã gộp), không có đường dẫn tới sub-bar path gốc. Đúng như dự định sẽ cần truyền thêm sub-step path vào `process_bar` khi timeframe chính là synthetic. Đã ghi rõ trong docstring + test `test_sl_and_tp_same_bar_path_priority_differs_from_sl_first`.
+- **[Plan 01] Lot size chốt lúc khớp, dùng entry thật** — nợ kỹ thuật #1 ở trên đã trả:
+  `risk_manager.calculate_lot` chuyển từ `main_loop.decide` vào `OrderEngine.process_bar`
+  nhánh fill `PENDING`, dùng `entry` vừa fill (`risk_distance = |entry - sl|` thật, không còn
+  ước lượng bằng `close[-1]`). `OpenTrade` mang `risk_pct_effective` (= `max_risk_per_trade_pct
+  x risk_multiplier`, chốt tại quyết định vì hai giá trị này không đổi giữa bar quyết định và
+  bar khớp) thay vì `lot_size` — `lot_size` giờ mặc định `0.0` và chỉ được set lúc khớp. Nếu
+  lot tính ra ở entry thật làm tròn về 0 (hiếm, nhưng có thể khác so với ước lượng), lệnh
+  PENDING bị CANCELLED tại khớp với detail `"lot size rounds to zero at fill"` — decision
+  `reason` cho bar đó vẫn là `done` (giữ nguyên vựng §8; “no_signal”/stage=`risk_manager` tại
+  quyết định không còn xảy ra qua đường này). Trade row PENDING insert với `lot_size=NULL`
+  (ít phá schema nhất — decision row chưa từng lưu lot); `UPDATE` khi `FILLED` set `lot_size`
+  thật. Test: `test_lot_sized_off_real_fill_entry_not_estimate` (risk thực tế đúng
+  `equity x risk_pct_effective/100` trong sai số 1 lot-step, dùng bar gap-open để entry ≠
+  close[-1]) và `test_lot_rounds_to_zero_cancels_pending_order_at_fill`
+  (`tests/unit/test_order_engine.py`). Golden hash đổi (xem cuối mục), đã re-pin.
+- **[Plan 01] `INTRABAR_PRIORITY="path"` dùng sub-bar path thật khi có** — nợ kỹ thuật #2 đã
+  trả: `synthetic.py` giờ lưu `sub_path` (16 điểm giá, `open→…→close`) trên `df15` mỗi candle;
+  cột này bị resample bỏ qua tự nhiên khi lên 1H/4H/1D/1W (`resample_fixed`'s `.agg()` chỉ động
+  tới các cột OHLCV được đặt tên) nên **chỉ có mặt trên khung `15m`** — đúng giới hạn plan
+  cho phép ("chỉ hỗ trợ khi TIMEFRAME=15m"). `Bar` có field `sub_path: tuple[float,...] | None`;
+  `Feed.bar_at` đọc cột này nếu tồn tại. `order_engine._bar_exit` nhận thêm `sub_path`: khi
+  `priority="path"` và có path, duyệt tuần tự từng đoạn (16 điểm → 15 đoạn), mốc SL/TP nào
+  nằm trong `[min,max]` của đoạn trước thắng; nếu path không có (CSV thật hoặc timeframe ≠ 15m)
+  thì fallback về xấp xỉ cũ (mốc gần `open` hơn thắng). Giới hạn còn lại (chấp nhận được, ghi
+  ở đây thay vì làm thêm): lần duyệt thứ hai trong cùng bar (sau khi TP1 khớp, kiểm tra phần
+  còn lại so với breakeven/TP2) dùng lại **toàn bộ** `sub_path` của bar thay vì cắt đúng đoạn
+  còn lại sau điểm chạm TP1 — cần `_walk_path_first_touch` trả thêm chỉ số đoạn để cắt chính
+  xác, không đáng độ phức tạp thêm ở plan này. Test: `test_path_priority_uses_real_sub_path_when_available`,
+  `test_synthetic_sub_path.py` (`tests/unit/`). Golden hash đổi (xem dưới), đã re-pin.
+
+**Golden hash re-pin (bất biến #1, sau khi trả 2 nợ kỹ thuật trên):** `python -m bot.cli replay
+--seed 42 --bars 2000` chạy 2 lần liên tiếp cho cùng
+`decision_stream_hash=460ea65e1e977c12b7ef93189e17c35fa1a72016fb893f037d17f1fc57d3ab8f`,
+final equity `9986.424648678441` — ổn định, không có giá trị hash cũ nào được ghim cứng trong
+test trước đó (`tests/integration/test_replay_golden.py` chỉ so sánh hai lần chạy với nhau,
+không so với hằng số), nên không có gì cần sửa trong test suite ngoài các test đơn vị đã liệt
+kê ở trên.
+
+- **[Plan 01] A/B filter harness (`python -m bot.cli ab --seed 42 --bars 5000`)** — với từng
+  filter trong registry (trừ `atr_ref` khoá), chạy baseline vs. biến thể đảo `enabled`, so
+  `decision_stream_hash` + số lệnh. Ở `seed=42, bars=5000`: `confirmation_lag`, `session`,
+  `adx_filter`, `er_filter`, `trend` đều đổi hash đúng như kỳ vọng của plan.
+  **`mtf` KHÔNG đổi hash** dù có mặt trong danh sách "phải đổi" của plan gốc — kiểm chứng đây
+  không phải lỗi: breakout signal vốn trend-following nên hướng của nó gần như luôn đồng
+  thuận với HTF trend (EMA34 vs EMA89 trên timeframe cao hơn), xung đột mtf hiếm xảy ra trên
+  dữ liệu synthetic — cùng loại "hiếm" đã ghi nhận cho MR (3 điều kiện AND). Cơ chế block của
+  `mtf` vẫn được chứng minh đúng bằng test dựng tay (`test_mtf_blocks_buy_when_htf_bear`,
+  `tests/unit/test_filters.py`). Đã chuyển `mtf` vào danh sách "có thể trơ" của harness
+  (`_AB_MAY_BE_INERT`, `bot/cli.py`) — harness in cảnh báo thay vì fail khi các filter trong
+  danh sách này không đổi hash. Danh sách đầy đủ các filter "có thể trơ": `news` (off mặc
+  định), `dxy`, `volume` (off cho FOREX), `atr_zscore`, `equity_curve`, `range_width`, `wick`,
+  `account_risk`, `time_stop`, `mtf`. Test tự động: `tests/integration/test_ab_filters.py`
+  (`@pytest.mark.slow`).
 - **Breakout-retest signal được tôn trọng bất kể nhãn regime của đúng bar khớp retest** — máy trạng thái retest (`strategies/breakout_retest.py`) chạy mỗi bar không điều kiện (yêu cầu của plan), nhưng khi retest hoàn tất và phát tín hiệu, `main_loop.decide` LUÔN dùng tín hiệu đó làm `signal` chính, không kiểm tra lại xem bar khớp retest có đang ở "regime trend" hay không (điều kiện trend chỉ áp dụng lúc breakout ban đầu được ghi nhận). Đây là lựa chọn hợp lý về giao dịch (một nhịp ADX rớt 1 bar không nên xoá mất retest đang chờ — đúng tinh thần plan) nhưng là một diễn giải cụ thể chưa có trong plan gốc, ghi nhận ở đây.
 - **MEAN_REVERSION hiếm khi khớp đủ 3 điều kiện đồng thời (ADX<25 AND ER<0.3 AND RSI quá mua/bán)** — đã kiểm chứng bằng dữ liệu synthetic: với tham số mặc định, tổ hợp cả ba điều kiện xảy ra ~1 lần / 20 000 bar H1. Đây không phải lỗi — về bản chất RSI cực trị thường đi kèm biến động có hướng (ADX tăng), trong khi MR yêu cầu đúng lúc thị trường "range". `python -m bot.cli replay --seed 42 --bars 5000` vì vậy thường chỉ sinh lệnh BREAKOUT; test suite (`test_main_loop.py`) verify từng nhánh MR bằng context dựng tay thay vì phụ thuộc random walk.
 - **`dxy_change_1h_pct`** tính bằng `(close[-1] - close[-1-lookback_hours]) / close[-1-lookback_hours] * 100` trên khung 1H của chuỗi DXY resample — công thức % thay đổi chuẩn, `lookback_hours` lấy từ `filters.dxy.lookback_hours` (mặc định 1).

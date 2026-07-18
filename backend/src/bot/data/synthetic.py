@@ -86,7 +86,21 @@ def _candles_from_path(
         hi = sub.max()
         lo = sub.min()
         ts = start_ts + timedelta(minutes=freq_minutes * c)
-        rows.append({"open_ts": ts, "open": o, "high": hi, "low": lo, "close": cl})
+        rows.append(
+            {
+                "open_ts": ts,
+                "open": o,
+                "high": hi,
+                "low": lo,
+                "close": cl,
+                # The 16-point (SUB_STEPS+1) intrabar path this candle was built from --
+                # threaded through to OrderEngine for real INTRABAR_PRIORITY="path"
+                # resolution (tech debt #2, plans/01-stabilize.md). Resampling to
+                # coarser timeframes drops this column (not in resample's agg map), so
+                # it is only ever present on the native 15m frame.
+                "sub_path": tuple(sub.tolist()),
+            }
+        )
     df = pd.DataFrame(rows).set_index("open_ts")
     df.index.name = "open_ts"
     return df

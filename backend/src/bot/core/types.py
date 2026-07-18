@@ -64,6 +64,11 @@ class Bar:
     close: float
     volume: float
     close_ts: datetime
+    # Real intrabar sub-step path (open -> ... -> close), when the feed can provide one
+    # (synthetic 15m data only, for now). None for real CSV data and resampled
+    # timeframes -- OrderEngine falls back to its OHLC-only approximation then
+    # (tech debt #2, plans/01-stabilize.md).
+    sub_path: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)

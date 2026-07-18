@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from bot.core.types import Bar, Direction, InstrumentSpec, OrderStatus, StrategyName, TPRules
+from bot.engine import risk_manager
 from bot.filters.time_stop import is_expired
 
 EPS_R = 1e-9
@@ -23,7 +24,8 @@ class OpenTrade:
     status: OrderStatus
     sl: float  # mutates to entry on breakeven move
     tp_rules: TPRules
-    lot_size: float
+    risk_pct_effective: float = 0.0  # max_risk_per_trade_pct x risk_multiplier, from decision time
+    lot_size: float = 0.0  # unknown until fill (C7: sized off the real entry, not the estimate)
     entry_price: float | None = None
     tp1_price: float | None = None
     tp2_price: float | None = None
@@ -84,6 +86,26 @@ def _in_range(low: float, high: float, level: float) -> bool:
     return low <= level <= high
 
 
+def _walk_path_first_touch(
+    sub_path: tuple[float, ...], sl: float, tp: float
+) -> tuple[float, str] | None:
+    """Walk the real intrabar sub-step path in order; the first segment where SL or
+    TP falls inside its [min, max] wins. If a single sub-step segment crosses both
+    (rare -- sub-steps are small), resolve by proximity to the segment's start, i.e.
+    whichever the path reaches first within that step."""
+    for a, b in zip(sub_path, sub_path[1:], strict=False):
+        seg_low, seg_high = (a, b) if a <= b else (b, a)
+        sl_in = seg_low <= sl <= seg_high
+        tp_in = seg_low <= tp <= seg_high
+        if sl_in and tp_in:
+            return (sl, "SL") if abs(a - sl) <= abs(a - tp) else (tp, "TP")
+        if sl_in:
+            return sl, "SL"
+        if tp_in:
+            return tp, "TP"
+    return None
+
+
 def _bar_exit(
     direction: Direction,
     low: float,
@@ -92,6 +114,7 @@ def _bar_exit(
     sl: float,
     tp: float | None,
     priority: str,
+    sub_path: tuple[float, ...] | None = None,
 ) -> tuple[float, str] | None:
     """Returns (exit_price, kind) where kind in {"SL","TP"}, or None if neither hit.
     Gap-through (open already past a level) wins over intrabar comparisons and fills
@@ -107,8 +130,13 @@ def _bar_exit(
     if sl_hit and tp_hit:
         if priority == "sl_first":
             return sl, "SL"
-        # "path" mode: no true sub-bar path plumbed through yet (documented deviation,
-        # see docs/decisions.md) -- approximate via whichever level is nearer to open.
+        # "path" mode: prefer the real sub-bar path (tech debt #2, plans/01-stabilize.md)
+        # when the feed provides one (synthetic 15m only); otherwise fall back to the
+        # documented approximation -- nearer to open wins (see docs/decisions.md).
+        if sub_path is not None:
+            walked = _walk_path_first_touch(sub_path, sl, float(tp))  # type: ignore[arg-type]
+            if walked is not None:
+                return walked
         if abs(open_ - sl) <= abs(open_ - float(tp)):  # type: ignore[arg-type]
             return sl, "SL"
         return float(tp), "TP"  # type: ignore[arg-type]
@@ -137,6 +165,7 @@ class OrderEngine:
         time_stop_hours: float,
         time_stop_enabled: bool,
         time_stop_after_tp1: bool,
+        equity: float = 0.0,
     ) -> BarOutcome:
         if trade is None:
             return BarOutcome(trade=None)
@@ -166,6 +195,21 @@ class OrderEngine:
                 return BarOutcome(trade=None, events=events, closed_result=None)
 
             risk_distance = abs(entry - trade.sl)
+
+            # Lot sized here, against the real fill entry, not the estimate used at
+            # decision time (tech debt #1, plans/01-stabilize.md).
+            lot_result = risk_manager.calculate_lot(
+                equity, trade.risk_pct_effective, 1.0, risk_distance, self.instrument
+            )
+            if lot_result.lot <= 0:
+                events.append(
+                    TradeEventRecord(
+                        "CANCELLED", bar.open_ts, entry, "lot size rounds to zero at fill"
+                    )
+                )
+                return BarOutcome(trade=None, events=events, closed_result=None)
+            trade.lot_size = lot_result.lot
+
             tp1: float | None
             tp2: float | None
             if trade.tp_rules.kind == "R_MULTIPLE":
@@ -202,7 +246,14 @@ class OrderEngine:
 
         active_tp = trade.tp1_price if not trade.tp1_hit else trade.tp2_price
         outcome1 = _bar_exit(
-            trade.direction, bar.low, bar.high, bar.open, trade.sl, active_tp, self.priority
+            trade.direction,
+            bar.low,
+            bar.high,
+            bar.open,
+            trade.sl,
+            active_tp,
+            self.priority,
+            bar.sub_path,
         )
 
         if outcome1 is not None:
@@ -224,9 +275,19 @@ class OrderEngine:
             trade.sl = trade.entry_price  # SL_TO_BREAKEVEN, immediately, same bar
             events.append(TradeEventRecord("SL_TO_BREAKEVEN", bar.open_ts, trade.entry_price, ""))
 
-            # Same-bar second pass on the remaining position (plan requirement).
+            # Same-bar second pass on the remaining position (plan requirement). Reuses
+            # the whole-bar sub_path as an approximation -- the path isn't sliced to
+            # start exactly at the TP1 touch point (would need the walk to also return
+            # a segment index; not worth the complexity here, see plans/01-stabilize.md).
             outcome2 = _bar_exit(
-                trade.direction, bar.low, bar.high, price, trade.sl, trade.tp2_price, self.priority
+                trade.direction,
+                bar.low,
+                bar.high,
+                price,
+                trade.sl,
+                trade.tp2_price,
+                self.priority,
+                bar.sub_path,
             )
             if outcome2 is not None:
                 price2, kind2 = outcome2

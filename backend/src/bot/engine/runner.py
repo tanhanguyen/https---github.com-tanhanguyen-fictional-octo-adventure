@@ -89,6 +89,7 @@ class Runner:
             self.config.filters.time_stop.hours,
             self.config.filters.time_stop.enabled,
             self.config.filters.time_stop.after_tp1,
+            equity=self.equity,
         )
         trade_db_id_before = self.trade_db_id
         closed_result_label = None
@@ -143,6 +144,7 @@ class Runner:
                     sl_price=self.trade.sl,
                     tp1_price=self.trade.tp1_price,
                     tp2_price=self.trade.tp2_price,
+                    lot_size=self.trade.lot_size,
                 )
 
         if trade_db_id_before is not None:
@@ -169,7 +171,7 @@ class Runner:
             equity=self.equity,
         )
         ctx = build_context(self.price_feed, self.dxy_feed, self.config, self.clock.now, account)
-        ml = main_loop.decide(ctx, self.breakout_state, self.config, self.instrument)
+        ml = main_loop.decide(ctx, self.breakout_state, self.config)
         self.breakout_state = ml.breakout_state
 
         new_trade_db_id = None
@@ -184,7 +186,7 @@ class Runner:
                     direction=t.direction.value,
                     status=OrderStatus.PENDING.value,
                     sl_price=t.sl,
-                    lot_size=t.lot_size,
+                    lot_size=None,  # unknown until fill (tech debt #1, plans/01-stabilize.md)
                 ),
             )
             t.local_id = new_trade_db_id

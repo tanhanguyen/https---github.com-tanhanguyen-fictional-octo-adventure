@@ -2,9 +2,9 @@
 regime/strategy candidate (§8 step 5-6, disabled-filter defaults per docs/decisions.md),
 always advances the breakout-retest state machine (cross-bar state, plan requirement),
 generates a signal, runs Phase B filters, resolves the final decision, and -- if
-`done` -- builds the PENDING order (SL fixed at decision time; TP/lot fixed at fill,
-deviation #7, with lot pre-sized here against an estimated entry -- see docs/decisions.md
-Phase-3 deviations).
+`done` -- builds the PENDING order (SL fixed at decision time; TP AND lot fixed at fill,
+deviation #7 -- lot sizing happens in OrderEngine.process_bar against the real fill
+entry, see docs/decisions.md).
 """
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bot.config.models import BotConfig
-from bot.core.types import FilterResult, InstrumentSpec, OrderStatus, StrategyName
-from bot.engine import risk_manager
+from bot.core.types import FilterResult, OrderStatus, StrategyName
 from bot.engine.decision_log import DecisionBundle, resolve_decision
 from bot.engine.order_engine import OpenTrade
 from bot.filters.base import FilterContext
@@ -55,7 +54,7 @@ def _regime_flags(fr_dict: dict[str, FilterResult]) -> tuple[bool, bool, bool, b
 
 
 def decide(
-    ctx: FilterContext, breakout_state: BreakoutState, config: BotConfig, instrument: InstrumentSpec
+    ctx: FilterContext, breakout_state: BreakoutState, config: BotConfig
 ) -> MainLoopResult:
     phase_a = {r.id: r for _fid, fn in PHASE_A for r in [fn(ctx)]}
 
@@ -124,32 +123,21 @@ def decide(
             ema34_close = float(ctx.ema_fast_close.iloc[-1])
             tp_rules = mean_reversion.compute_tp_rules(ema34_close)
 
+        # Lot is NOT sized here -- it depends on the real fill entry, which is only
+        # known in OrderEngine.process_bar (tech debt #1, plans/01-stabilize.md). A
+        # PENDING order is always built for a `done` signal; if the eventual real-entry
+        # lot rounds to zero, OrderEngine cancels it at fill.
         risk_multiplier = all_results["equity_curve"].values.get("risk_multiplier", 1.0)
-        sl_distance_estimate = abs(float(ctx.close.iloc[-1]) - sl)
-        lot_result = risk_manager.calculate_lot(
-            ctx.equity,
-            config.risk.max_risk_per_trade_pct,
-            risk_multiplier,
-            sl_distance_estimate,
-            instrument,
+        open_trade = OpenTrade(
+            local_id=0,
+            symbol=config.symbol,
+            strategy=signal.strategy,
+            direction=signal.direction,
+            status=OrderStatus.PENDING,
+            sl=sl,
+            tp_rules=tp_rules,
+            risk_pct_effective=config.risk.max_risk_per_trade_pct * risk_multiplier,
         )
-        if lot_result.lot > 0:
-            open_trade = OpenTrade(
-                local_id=0,
-                symbol=config.symbol,
-                strategy=signal.strategy,
-                direction=signal.direction,
-                status=OrderStatus.PENDING,
-                sl=sl,
-                tp_rules=tp_rules,
-                lot_size=lot_result.lot,
-            )
-        else:
-            from bot.core.types import DecisionOutcome
-
-            outcome = DecisionOutcome(
-                reason="no_signal", stage="risk_manager", detail="lot size rounds to zero"
-            )
 
     bundle = DecisionBundle(
         outcome=outcome, filter_results=all_results, signal=signal, strategy=used_strategy

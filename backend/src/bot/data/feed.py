@@ -37,6 +37,7 @@ class Feed:
             return None
         row = df.loc[open_ts]
         dur = tf_duration(tf)
+        sub_path = row["sub_path"] if "sub_path" in df.columns else None
         return Bar(
             open_ts=open_ts,
             open=float(row["open"]),
@@ -45,6 +46,7 @@ class Feed:
             close=float(row["close"]),
             volume=float(row["volume"]),
             close_ts=open_ts + dur,
+            sub_path=tuple(sub_path) if sub_path is not None else None,
         )
 
     def next_open_after(self, tf: str, ts: datetime) -> datetime | None:

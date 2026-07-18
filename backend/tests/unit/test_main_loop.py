@@ -180,20 +180,9 @@ def test_reason_done():
 
 def test_full_main_loop_produces_done_and_pending_order(base_ctx):
     # base_ctx fixture is a warmed-up, in-session context (see tests/unit/conftest.py)
-    from bot.core.types import InstrumentSpec
-
-    instrument = InstrumentSpec(
-        symbol="EURUSD",
-        contract_size=100_000,
-        pip=0.0001,
-        pip_value_per_lot=10.0,
-        spread_pips=0.0,
-        min_lot=0.01,
-        lot_step=0.01,
-    )
     from bot.strategies.base import BreakoutState
 
-    result = main_loop.decide(base_ctx, BreakoutState.initial(), base_ctx.config, instrument)
+    result = main_loop.decide(base_ctx, BreakoutState.initial(), base_ctx.config)
     assert result.bundle.outcome.reason in (
         "wait",
         "no_signal",
@@ -206,19 +195,9 @@ def test_full_main_loop_produces_done_and_pending_order(base_ctx):
 
 
 def test_full_main_loop_account_risk_blocks_when_trade_open(base_ctx):
-    from bot.core.types import InstrumentSpec
     from bot.strategies.base import BreakoutState
 
-    instrument = InstrumentSpec(
-        symbol="EURUSD",
-        contract_size=100_000,
-        pip=0.0001,
-        pip_value_per_lot=10.0,
-        spread_pips=0.0,
-        min_lot=0.01,
-        lot_step=0.01,
-    )
     ctx = replace(base_ctx, open_trades_count=1)
-    result = main_loop.decide(ctx, BreakoutState.initial(), ctx.config, instrument)
+    result = main_loop.decide(ctx, BreakoutState.initial(), ctx.config)
     assert result.bundle.outcome.reason == "max_concurrent_trades_reached"
     assert result.bundle.outcome.stage == "one_trade_per_symbol"
