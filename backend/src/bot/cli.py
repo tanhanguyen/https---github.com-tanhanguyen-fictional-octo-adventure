@@ -9,6 +9,7 @@ import hashlib
 import json
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 from bot.config.loader import load_default_config, load_instruments
@@ -20,6 +21,7 @@ from bot.data.feed import Feed
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
 from bot.engine.runner import Runner
+from bot.filters.registry import ALL_FILTER_IDS
 
 
 def _build_instrument(config: BotConfig, instruments_yaml: dict[str, Any]) -> InstrumentSpec:
@@ -35,10 +37,66 @@ def _build_instrument(config: BotConfig, instruments_yaml: dict[str, Any]) -> In
     )
 
 
+@dataclass
+class _RunResult:
+    stream: list[tuple[str, str, str]]
+    decision_hash: str
+    order_count: int
+    final_equity: float
+    reason_histogram: Counter[str]
+    result_histogram: Counter[str]
+
+
+def _run(
+    conn_tag: str,
+    config: BotConfig,
+    instrument: InstrumentSpec,
+    price_feed: Feed,
+    dxy_feed: Feed,
+    bars: int,
+) -> _RunResult:
+    conn = connect_and_migrate(":memory:")
+    repo.upsert_dataset(conn, conn_tag, "{}")
+    cv_id = repo.create_config_version(conn, config.model_dump_json(), note=conn_tag)
+    run_id = repo.create_run(conn, conn_tag, cv_id, config.symbol, config.starting_equity)
+
+    primary = config.timeframe
+    first_ts = price_feed.frames[primary].index[0].to_pydatetime()
+    clock = Clock(first_ts)
+    runner = Runner(conn, run_id, price_feed, dxy_feed, config, instrument, clock)
+
+    stream: list[tuple[str, str, str]] = []
+    reason_histogram: Counter[str] = Counter()
+    result_histogram: Counter[str] = Counter()
+    for _ in range(bars):
+        summary = runner.step()
+        if summary is None:
+            break
+        stream.append((summary.bar_ts, summary.reason, summary.stage))
+        reason_histogram[summary.reason] += 1
+        if summary.closed_result is not None:
+            result_histogram[summary.closed_result] += 1
+
+    order_count = conn.execute(
+        "SELECT COUNT(*) FROM trade WHERE run_id=?", (run_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    stream_json = json.dumps(stream, separators=(",", ":"))
+    decision_hash = hashlib.sha256(stream_json.encode("utf-8")).hexdigest()
+    return _RunResult(
+        stream=stream,
+        decision_hash=decision_hash,
+        order_count=order_count,
+        final_equity=runner.equity,
+        reason_histogram=reason_histogram,
+        result_histogram=result_histogram,
+    )
+
+
 def cmd_replay(seed: int, bars: int) -> int:
     config = load_default_config()
-    instruments_yaml = load_instruments()
-    instrument = _build_instrument(config, instruments_yaml)
+    instrument = _build_instrument(config, load_instruments())
 
     n_candles_15m = (bars + 400) * 4
     dataset_spec = DatasetSpec(
@@ -52,48 +110,76 @@ def cmd_replay(seed: int, bars: int) -> int:
     price_feed = Feed(frames=bundle["price"])
     dxy_feed = Feed(frames=bundle["dxy"])
 
-    conn = connect_and_migrate(":memory:")
-    repo.upsert_dataset(conn, "replay-inmem", json.dumps({"seed": seed, "bars": bars}))
-    cv_id = repo.create_config_version(conn, config.model_dump_json(), note="replay")
-    run_id = repo.create_run(conn, "replay-inmem", cv_id, config.symbol, config.starting_equity)
+    result = _run("replay-inmem", config, instrument, price_feed, dxy_feed, bars)
 
-    primary = config.timeframe
-    first_ts = price_feed.frames[primary].index[0].to_pydatetime()
-    clock = Clock(first_ts)
+    print(f"bars processed: {len(result.stream)}")
+    print(f"reason histogram: {dict(result.reason_histogram)}")
+    print(f"result histogram: {dict(result.result_histogram)}")
+    print(f"final equity: {result.final_equity:.2f}")
+    print(f"decision_stream_hash: {result.decision_hash}")
+    print(f"final_equity_repr: {result.final_equity!r}")
+    return 0
 
-    runner = Runner(conn, run_id, price_feed, dxy_feed, config, instrument, clock)
 
-    stream: list[tuple[str, str, str]] = []
-    reason_histogram: Counter[str] = Counter()
-    strategy_trade_count: Counter[str] = Counter()
+# Filters that never toggle (locked, or DERIVED/structural) -- excluded from the A/B sweep.
+_AB_EXCLUDED_FILTERS = {"atr_ref"}
 
-    for _ in range(bars):
-        summary = runner.step()
-        if summary is None:
-            break
-        stream.append((summary.bar_ts, summary.reason, summary.stage))
-        reason_histogram[summary.reason] += 1
-        if summary.closed_result is not None:
-            strategy_trade_count[summary.closed_result] += 1
+# Rarely-triggered on synthetic data (docs/decisions.md, Phase 2/3 deviations): toggling
+# them may not change the decision stream for a given seed/bars, so the harness only warns
+# instead of failing when their hash doesn't move.
+_AB_MAY_BE_INERT = {
+    "news",
+    "dxy",
+    "volume",
+    "atr_zscore",
+    "equity_curve",
+    "range_width",
+    "wick",
+    "account_risk",
+    "time_stop",
+    # Breakout signals are inherently trend-following, so their direction structurally
+    # tends to already agree with the HTF trend -- an mtf conflict is rare on synthetic
+    # data (same class of rarity as MR's 3-condition AND, see docs/decisions.md).
+    "mtf",
+}
 
-    cur = conn.execute(
-        "SELECT strategy, COUNT(*) FROM trade WHERE run_id=? AND status='CLOSED' GROUP BY strategy",
-        (run_id,),
+
+def cmd_ab(seed: int, bars: int) -> int:
+    config = load_default_config()
+    instrument = _build_instrument(config, load_instruments())
+
+    n_candles_15m = (bars + 400) * 4
+    dataset_spec = DatasetSpec(
+        seed=seed,
+        n_candles_15m=n_candles_15m,
+        symbol=config.symbol,
+        rollover_tz=config.trading_day_rollover_tz,
+        rollover_time=config.trading_day_rollover_time,
     )
-    per_strategy = dict(cur.fetchall())
+    bundle = generate_bundle(dataset_spec)
+    price_feed = Feed(frames=bundle["price"])
+    dxy_feed = Feed(frames=bundle["dxy"])
 
-    stream_json = json.dumps(stream, separators=(",", ":"))
-    decision_hash = hashlib.sha256(stream_json.encode("utf-8")).hexdigest()
+    baseline = _run("ab-baseline", config, instrument, price_feed, dxy_feed, bars)
 
-    print(f"bars processed: {len(stream)}")
-    print(f"trades per strategy: {per_strategy}")
-    print(f"reason histogram: {dict(reason_histogram)}")
-    print(f"result histogram: {dict(strategy_trade_count)}")
-    print(f"final equity: {runner.equity:.2f}")
-    print(f"decision_stream_hash: {decision_hash}")
-    print(f"final_equity_repr: {runner.equity!r}")
+    print(f"{'filter':<18}{'hash changed?':<16}{'delta orders':<14}")
+    dead: list[str] = []
+    for fid in ALL_FILTER_IDS:
+        if fid in _AB_EXCLUDED_FILTERS:
+            continue
+        variant = config.model_copy(deep=True)
+        toggle = getattr(variant.filters, fid)
+        toggle.enabled = not toggle.enabled
+        result = _run(f"ab-{fid}", variant, instrument, price_feed, dxy_feed, bars)
 
-    conn.close()
+        changed = result.decision_hash != baseline.decision_hash
+        delta = result.order_count - baseline.order_count
+        print(f"{fid:<18}{('YES' if changed else 'no'):<16}{delta:+d}")
+        if not changed and fid not in _AB_MAY_BE_INERT:
+            dead.append(fid)
+
+    if dead:
+        print(f"WARNING: unexplained dead filters (no hash change on toggle): {dead}")
     return 0
 
 
@@ -105,9 +191,15 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("--seed", type=int, default=42)
     replay.add_argument("--bars", type=int, default=5000)
 
+    ab = sub.add_parser("ab", help="A/B each filter (baseline vs toggled) against a baseline")
+    ab.add_argument("--seed", type=int, default=42)
+    ab.add_argument("--bars", type=int, default=5000)
+
     args = parser.parse_args(argv)
     if args.command == "replay":
         return cmd_replay(args.seed, args.bars)
+    if args.command == "ab":
+        return cmd_ab(args.seed, args.bars)
     return 1
 
 

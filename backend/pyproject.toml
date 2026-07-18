@@ -33,6 +33,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: exercises the full runner loop many times (deselect with -m 'not slow')"]
 pythonpath = ["src"]
 
 [tool.mypy]
