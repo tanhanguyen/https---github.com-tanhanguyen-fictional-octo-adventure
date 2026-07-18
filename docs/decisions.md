@@ -48,6 +48,7 @@ mỗi sai lệch đều có lý do ghi kèm. Mỗi quy ước C* có test canh.
 
 Filter disabled → `enabled=False, evaluated=False, passed=None`, **không bao giờ chặn**.
 Cả ADX lẫn ER disabled → điều kiện regime mặc định đúng → nhánh BREAKOUT thắng (theo thứ tự if/elif của §8 bước 6).
+**Foot-gun UI (user chốt 2026-07-18)**: vì tắt cả hai = breakout-mọi-lúc (fail-open), trang Config phải hiện dialog xác nhận khi user tắt filter thứ hai trong cặp {adx, er} — chỉ tắt sau khi confirm (việc làm: plan 09 §4).
 
 ## Công thức SL/TP — đủ hai phía (mirror của §6.8)
 

@@ -8,13 +8,35 @@ step/play/pause/reset never race.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+_R = TypeVar("_R")
+
+
+def _locked(fn: Callable[..., _R]) -> Callable[..., _R]:
+    """Serialize a method against the shared sqlite connection via self.lock.
+
+    The single sqlite3.Connection is shared by the play worker thread and the
+    request-handler threads. Using one connection concurrently from multiple
+    threads corrupts it ("database disk image is malformed"), so every method
+    that touches self.conn must hold self.lock. It is an RLock, so nesting
+    (e.g. create_run -> get_active_config) is safe.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self: "RunnerService", *args: Any, **kwargs: Any) -> _R:
+        with self.lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
 
 from bot.config.loader import deep_merge, load_default_config, load_instruments
 from bot.config.metadata import metadata_by_field
@@ -72,6 +94,7 @@ class RunnerService:
         cfg = load_default_config()
         return repo.create_config_version(self.conn, cfg.model_dump_json(), note="seed default")
 
+    @_locked
     def get_active_config(self) -> tuple[sqlite3.Row, BotConfig]:
         row = repo.get_active_config_version(self.conn)
         if row is None:
@@ -79,6 +102,7 @@ class RunnerService:
         cfg = BotConfig.model_validate_json(row["config_json"])
         return row, cfg
 
+    @_locked
     def patch_config(self, patch: dict[str, Any], note: str = "") -> sqlite3.Row:
         row, _cfg = self.get_active_config()
         base = json.loads(row["config_json"])
@@ -89,10 +113,12 @@ class RunnerService:
         assert row2 is not None
         return row2
 
+    @_locked
     def list_config_versions(self) -> list[sqlite3.Row]:
         cur = self.conn.execute("SELECT * FROM config_version ORDER BY version DESC")
         return list(cur.fetchall())
 
+    @_locked
     def activate_config_version(self, config_version_id: int) -> sqlite3.Row:
         cur = self.conn.execute("SELECT id FROM config_version WHERE id=?", (config_version_id,))
         if cur.fetchone() is None:
@@ -103,6 +129,7 @@ class RunnerService:
         return row
 
     # --------------------------------------------------------------- filters
+    @_locked
     def filters_snapshot(self) -> list[dict[str, Any]]:
         _, cfg = self.get_active_config()
         meta = metadata_by_field()
@@ -147,6 +174,7 @@ class RunnerService:
         }
 
     # -------------------------------------------------------------- datasets
+    @_locked
     def create_dataset(
         self, seed: int, bars: int, symbol: str, rollover_tz: str, rollover_time: str
     ) -> str:
@@ -162,6 +190,7 @@ class RunnerService:
         repo.upsert_dataset(self.conn, did, json.dumps(asdict(spec)))
         return did
 
+    @_locked
     def list_datasets(self) -> list[dict[str, Any]]:
         cur = self.conn.execute("SELECT * FROM dataset ORDER BY created_at_utc DESC")
         out: list[dict[str, Any]] = []
@@ -249,6 +278,7 @@ class RunnerService:
             "is_playing": self.is_playing(),
         }
 
+    @_locked
     def get_run(self) -> dict[str, Any] | None:
         if self.run_id is None:
             return None
@@ -316,6 +346,7 @@ class RunnerService:
         peak = row[0] if row is not None and row[0] is not None else starting
         return max(float(peak), starting)
 
+    @_locked
     def account_snapshot(self) -> dict[str, Any]:
         _, cfg = self.get_active_config()
         if self.run_id is None:
@@ -366,6 +397,7 @@ class RunnerService:
         }
 
     # ------------------------------------------------------------------ trades
+    @_locked
     def list_trades(self, status: str | None = None) -> list[sqlite3.Row]:
         if self.run_id is None:
             return []
@@ -380,11 +412,13 @@ class RunnerService:
             )
         return list(cur.fetchall())
 
+    @_locked
     def get_trade(self, trade_id: int) -> sqlite3.Row | None:
         cur = self.conn.execute("SELECT * FROM trade WHERE id=?", (trade_id,))
         row: sqlite3.Row | None = cur.fetchone()
         return row
 
+    @_locked
     def list_trade_events(self, trade_id: int) -> list[sqlite3.Row]:
         cur = self.conn.execute(
             "SELECT * FROM trade_event WHERE trade_id=? ORDER BY id ASC", (trade_id,)
@@ -392,6 +426,7 @@ class RunnerService:
         return list(cur.fetchall())
 
     # ---------------------------------------------------------------- decisions
+    @_locked
     def list_decisions(
         self, limit: int = 50, reason: str | None = None, outcome: str | None = None
     ) -> list[sqlite3.Row]:
@@ -411,17 +446,20 @@ class RunnerService:
         cur = self.conn.execute(query, params)
         return list(cur.fetchall())
 
+    @_locked
     def get_decision(self, decision_id: int) -> sqlite3.Row | None:
         cur = self.conn.execute("SELECT * FROM decision WHERE id=?", (decision_id,))
         row: sqlite3.Row | None = cur.fetchone()
         return row
 
+    @_locked
     def list_decision_filters(self, decision_id: int) -> list[sqlite3.Row]:
         cur = self.conn.execute(
             "SELECT * FROM decision_filter WHERE decision_id=? ORDER BY id ASC", (decision_id,)
         )
         return list(cur.fetchall())
 
+    @_locked
     def decision_stats(self) -> dict[str, int]:
         if self.run_id is None:
             return {}
@@ -431,6 +469,7 @@ class RunnerService:
         return {row[0]: row[1] for row in cur.fetchall()}
 
     # ------------------------------------------------------------------ equity
+    @_locked
     def list_equity_points(self, limit: int = 500) -> list[sqlite3.Row]:
         if self.run_id is None:
             return []
