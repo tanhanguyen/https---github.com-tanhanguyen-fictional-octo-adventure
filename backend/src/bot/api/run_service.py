@@ -18,6 +18,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TypeVar
 
+from bot.config.loader import deep_merge, load_default_config, load_instruments
+from bot.config.metadata import metadata_by_field
+from bot.config.models import BotConfig
+from bot.core.clock import Clock
+from bot.core.errors import ConfigError
+from bot.core.types import InstrumentSpec
+from bot.data.dataset import DatasetSpec, generate_bundle
+from bot.data.dataset import dataset_id as compute_dataset_id
+from bot.data.feed import Feed
+from bot.db import repositories as repo
+from bot.db.connection import migrate
+from bot.engine.runner import Runner, StepSummary
+from bot.filters.registry import ALL_FILTER_IDS
+
 _R = TypeVar("_R")
 
 
@@ -32,25 +46,11 @@ def _locked(fn: Callable[..., _R]) -> Callable[..., _R]:
     """
 
     @functools.wraps(fn)
-    def wrapper(self: "RunnerService", *args: Any, **kwargs: Any) -> _R:
+    def wrapper(self: RunnerService, *args: Any, **kwargs: Any) -> _R:
         with self.lock:
             return fn(self, *args, **kwargs)
 
     return wrapper
-
-from bot.config.loader import deep_merge, load_default_config, load_instruments
-from bot.config.metadata import metadata_by_field
-from bot.config.models import BotConfig
-from bot.core.clock import Clock
-from bot.core.errors import ConfigError
-from bot.core.types import InstrumentSpec
-from bot.data.dataset import DatasetSpec, generate_bundle
-from bot.data.dataset import dataset_id as compute_dataset_id
-from bot.data.feed import Feed
-from bot.db import repositories as repo
-from bot.db.connection import migrate
-from bot.engine.runner import Runner, StepSummary
-from bot.filters.registry import ALL_FILTER_IDS
 
 
 def default_db_path() -> str:

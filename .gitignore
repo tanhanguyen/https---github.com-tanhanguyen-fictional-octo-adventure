@@ -9,6 +9,8 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+*.db.corrupt.bak
+backend/data/
 data/generated/
 .DS_Store
 coverage/
