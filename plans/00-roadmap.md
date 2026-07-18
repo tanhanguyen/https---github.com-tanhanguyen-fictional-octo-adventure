@@ -47,7 +47,8 @@ forex/crypto khung tự do (M15, H1, …). Phản ánh: plan 04 (`overrides.time
 05 (định nghĩa H4 phiên VN + warmup 1W), 02 (CSV native timeframe), 07 (LiveFeed interval
 theo config). Ưu tiên user: **ít lỗ nhất, ít sự cố nhất, lời ít cũng được** — các đề xuất
 an toàn tương ứng nằm ở plan 04 (❓ total risk cap), 07 (❓ weekend-flat), 08 (mục
-"Chống sự cố khớp lệnh" + ❓2/❓4).
+"Chống sự cố khớp lệnh" + ❓2/❓4) — *các ❓ này đã được chốt ở đợt 2–3 bên dưới,
+chỉ còn ❓ max-lot/max-lệnh-ngày (08 ❓2) và các ❓ gắn mốc thời gian demo là mở.*
 
 Quyết định user (2026-07-18, đợt 2): (a) risk/lệnh config qua UI — real bắt đầu **0.5%**,
 user tự nâng dần (dự kiến tới 2%) — plan 08 §4 đã chốt; (b) **không bắt buộc** trần risk

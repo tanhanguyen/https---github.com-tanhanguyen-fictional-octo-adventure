@@ -71,6 +71,13 @@
   cách **re-run phần decide (không ghi)** trên K bar gần nhất hoặc persist state máy trạng thái
   retest vào DB mỗi bar — chọn persist state (bảng `strategy_state(run_id, symbol, json)`)
   vì re-run dễ lệch. Ghi quyết định này vào decisions.md.
+- **Đa symbol = MỘT process live cho cả danh mục** (rà lần cuối 2026-07-18): sau plan 04,
+  `bot.cli live` chạy cả mảng `symbols` của config trong một process (`--symbol` chỉ còn là
+  override debug chạy lẻ). Lý do: `MAX_CONCURRENT_TRADES`, daily-loss-limit và
+  `max_total_open_risk_pct` là **toàn tài khoản** — mỗi symbol một process sẽ vô hiệu hoá
+  toàn bộ trần danh mục (kể cả vai trò whitelist chống tương quan của plan 10). Feed
+  per-symbol có thể khác venue (Binance/OANDA) — LiveRunner hợp nhất mốc bar-close
+  y như Runner replay của plan 04.
 - Một process riêng: `python -m bot.cli live --symbol BTCUSDT` (không chạy trong uvicorn worker;
   API đọc chung DB — WAL cho phép reader song song; API **không** ghi vào run live trừ
   lệnh dừng qua cờ trong DB (`run.stop_requested`) mà LiveRunner kiểm mỗi vòng).

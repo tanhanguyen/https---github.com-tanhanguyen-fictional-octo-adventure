@@ -28,6 +28,12 @@
   cho symbol biến động cao như XAUUSD, xem plan 10 mục "Cặp khuyến nghị theo phiên").
   Mảng `symbols` đồng thời đóng vai trò **whitelist chống tương quan** của user
   (chỉ trade cặp có trong danh sách — không cần cơ chế mới).
+- **Instrument spec phải per-symbol** (phát hiện khi rà lần cuối 2026-07-18): các tham số
+  `pip`, `pip_value_per_lot`, `contract_size`, `min_lot`, `spread_pips` hiện là config
+  toàn cục chuẩn EURUSD (decisions.md mục Gap). USDJPY có `pip = 0.01` (khác 100 lần),
+  XAUUSD khác hẳn — dùng chung spec EURUSD sẽ **sizing sai lot** → chuyển instrument spec
+  vào entry của từng symbol (hoặc bảng instrument tra theo symbol). Migrate: config cũ
+  1 symbol lấy spec toàn cục hiện có. Có test sizing cho ít nhất một symbol pip=0.01.
 - Mỗi symbol một timeframe ⇒ mốc bar-close mỗi symbol khác nhau — cơ chế "hợp nhất mốc
   clock" bên dưới phải có test với TF hỗn hợp (ví dụ 15m + 1D chạy chung), không chỉ
   cùng-TF-lệch-lịch. Schema-driven UI
