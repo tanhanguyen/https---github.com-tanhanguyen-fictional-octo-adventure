@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bot.analytics.metrics import RunReport, compute_run_report
 from bot.config.loader import load_default_config, load_instruments
 from bot.config.models import BotConfig
 from bot.core.clock import Clock
@@ -60,6 +61,7 @@ class _RunResult:
     final_equity: float
     reason_histogram: Counter[str]
     result_histogram: Counter[str]
+    report: RunReport
 
 
 def _run(
@@ -95,6 +97,36 @@ def _run(
     order_count = conn.execute(
         "SELECT COUNT(*) FROM trade WHERE run_id=?", (run_id,)
     ).fetchone()[0]
+
+    closed_trades = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM trade WHERE run_id=? AND status='CLOSED' ORDER BY id", (run_id,)
+        )
+    ]
+    equity_series = [
+        float(r[0])
+        for r in conn.execute(
+            "SELECT equity FROM equity_point WHERE run_id=? ORDER BY id", (run_id,)
+        )
+    ]
+    filter_blocks = {
+        str(r[0]): int(r[1])
+        for r in conn.execute(
+            "SELECT df.filter_id, COUNT(*) FROM decision_filter df "
+            "JOIN decision d ON d.id = df.decision_id "
+            "WHERE d.run_id=? AND df.blocking=1 GROUP BY df.filter_id",
+            (run_id,),
+        )
+    }
+    report = compute_run_report(
+        closed_trades,
+        equity_series,
+        config.starting_equity,
+        config.timeframe,
+        dict(reason_histogram),
+        filter_blocks,
+    )
     conn.close()
 
     stream_json = json.dumps(stream, separators=(",", ":"))
@@ -106,7 +138,39 @@ def _run(
         final_equity=runner.equity,
         reason_histogram=reason_histogram,
         result_histogram=result_histogram,
+        report=report,
     )
+
+
+def _fmt(x: float | None, spec: str = ".2f", suffix: str = "") -> str:
+    return "n/a" if x is None else f"{format(x, spec)}{suffix}"
+
+
+def _print_report(report: RunReport) -> None:
+    o, s = report.overall, report.series
+    win_rate_pct = None if o.win_rate is None else o.win_rate * 100.0
+    print("--- RunReport ---")
+    print(
+        f"trades: {o.n_total} (WIN {o.n_win} / LOSS {o.n_loss} / BE {o.n_breakeven})  "
+        f"strategy: {o.n_by_strategy}  direction: {o.n_by_direction}"
+    )
+    print(
+        f"win_rate: {_fmt(win_rate_pct, '.1f', '%')}  "
+        f"profit_factor: {_fmt(o.profit_factor)}  "
+        f"expectancy: {_fmt(o.expectancy_r, '.3f', 'R')}  "
+        f"avg_hold: {_fmt(o.avg_holding_hours, '.1f', 'h')}"
+    )
+    print(
+        f"avg/max win: {_fmt(o.avg_win)}/{_fmt(o.max_win)}  "
+        f"avg/max loss: {_fmt(o.avg_loss)}/{_fmt(o.max_loss)}"
+    )
+    print(
+        f"final_equity: {s.final_equity:.2f}  return: {s.total_return_pct:.2f}%  "
+        f"max_dd: {s.max_drawdown_abs:.2f} ({s.max_drawdown_pct:.2f}%)  "
+        f"longest_dd: {s.longest_drawdown_bars} bars  sharpe: {_fmt(s.sharpe)}"
+    )
+    if report.filter_block_counts:
+        print(f"filter_blocks: {report.filter_block_counts}")
 
 
 def cmd_replay(seed: int, bars: int) -> int:
@@ -133,6 +197,7 @@ def cmd_replay(seed: int, bars: int) -> int:
     print(f"final equity: {result.final_equity:.2f}")
     print(f"decision_stream_hash: {result.decision_hash}")
     print(f"final_equity_repr: {result.final_equity!r}")
+    _print_report(result.report)
     return 0
 
 
@@ -179,6 +244,7 @@ def cmd_replay_dataset(dataset_id: str, bars: int) -> int:
     print(f"final equity: {result.final_equity:.2f}")
     print(f"decision_stream_hash: {result.decision_hash}")
     print(f"final_equity_repr: {result.final_equity!r}")
+    _print_report(result.report)
     return 0
 
 

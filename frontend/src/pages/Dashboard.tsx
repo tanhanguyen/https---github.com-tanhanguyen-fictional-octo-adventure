@@ -1,12 +1,17 @@
+import { useState } from 'react'
 import { api } from '../api/client'
 import { AccountPanel } from '../components/AccountPanel'
+import { CandleChart } from '../components/CandleChart'
 import { EquityChart } from '../components/EquityChart'
 import { OpenTradesTable } from '../components/OpenTradesTable'
 import { RiskGauge } from '../components/RiskGauge'
 import { RunControls } from '../components/RunControls'
 import { usePolling } from '../hooks/usePolling'
 
+const CHART_TIMEFRAMES = ['15m', '1H', '4H', '1D']
+
 export function Dashboard() {
+  const [chartTf, setChartTf] = useState('1H')
   const { data: run, refetch: refetchRun } = usePolling(() => api.getRun(), 1000, true)
   const { data: account, refetch: refetchAccount } = usePolling(
     () => api.getAccount(),
@@ -26,12 +31,19 @@ export function Dashboard() {
     Boolean(run?.is_playing),
     [run?.id],
   )
+  const { data: bars, refetch: refetchBars } = usePolling(
+    () => (run ? api.getRunBars(run.id, chartTf) : Promise.resolve([])),
+    1000,
+    Boolean(run?.is_playing),
+    [run?.id, chartTf],
+  )
 
   function refreshAll() {
     void refetchRun()
     void refetchAccount()
     void refetchEquity()
     void refetchTrades()
+    void refetchBars()
   }
 
   return (
@@ -40,6 +52,23 @@ export function Dashboard() {
       <div className="grid grid-2">
         <AccountPanel account={account} />
         <RiskGauge account={account} />
+      </div>
+      <div className="card">
+        <div className="toolbar">
+          <h2 style={{ margin: 0 }}>Chart nến + trade markers</h2>
+          <select value={chartTf} onChange={(e) => setChartTf(e.target.value)}>
+            {CHART_TIMEFRAMES.map((tf) => (
+              <option key={tf} value={tf}>
+                {tf}
+              </option>
+            ))}
+          </select>
+        </div>
+        {run ? (
+          <CandleChart bars={bars ?? []} trades={trades ?? []} />
+        ) : (
+          <p className="muted">Chưa có run — tạo run để xem chart.</p>
+        )}
       </div>
       <div className="card">
         <h2>Equity curve</h2>

@@ -195,6 +195,98 @@ class RunCreateIn(BaseModel):
     dataset_id: str | None = None
 
 
+class RunSummaryOut(BaseModel):
+    id: int
+    dataset_id: str
+    config_version_id: int
+    config_version: int
+    symbol: str
+    status: str
+    starting_equity: float
+    created_at_utc: str
+    bars_processed: int
+    final_equity: float | None
+    closed_trades: int
+    is_active: bool
+
+
+class HistogramBinOut(BaseModel):
+    label: str
+    lo: float | None
+    hi: float | None
+    count: int
+
+
+class TradeStatsOut(BaseModel):
+    n_total: int
+    n_by_strategy: dict[str, int]
+    n_by_direction: dict[str, int]
+    n_win: int
+    n_loss: int
+    n_breakeven: int
+    win_rate: float | None
+    profit_factor: float | None
+    expectancy_r: float | None
+    avg_win: float | None
+    max_win: float | None
+    avg_loss: float | None
+    max_loss: float | None
+    avg_holding_hours: float | None
+    r_histogram: list[HistogramBinOut]
+
+
+class SeriesStatsOut(BaseModel):
+    final_equity: float
+    total_return_pct: float
+    max_drawdown_abs: float
+    max_drawdown_pct: float
+    longest_drawdown_bars: int
+    sharpe: float | None
+    n_bars: int
+
+
+class RunReportOut(BaseModel):
+    run_id: int
+    overall: TradeStatsOut
+    per_strategy: dict[str, TradeStatsOut]
+    series: SeriesStatsOut
+    reason_histogram: dict[str, int]
+    filter_block_counts: dict[str, int]
+
+
+class MetricDiffOut(BaseModel):
+    a: float | None
+    b: float | None
+    delta: float | None
+
+
+class HistCountDiffOut(BaseModel):
+    a: int
+    b: int
+    delta: int
+
+
+class RunCompareOut(BaseModel):
+    run_a: int
+    run_b: int
+    dataset_a: str
+    dataset_b: str
+    config_version_a: int
+    config_version_b: int
+    same_dataset: bool
+    same_config_version: bool
+    metrics: dict[str, MetricDiffOut]
+    reason_histogram: dict[str, HistCountDiffOut]
+
+
+class BarOut(BaseModel):
+    ts_utc: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+
 class RunStepOut(BaseModel):
     bar_ts: str
     reason: str

@@ -18,12 +18,15 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TypeVar
 
+import pandas as pd
+
+from bot.analytics.metrics import RunReport, compute_run_report, diff_histograms, diff_reports
 from bot.config.loader import deep_merge, load_default_config, load_instruments
 from bot.config.metadata import metadata_by_field
 from bot.config.models import BotConfig
 from bot.core.clock import Clock
 from bot.core.errors import ConfigError
-from bot.core.timeframes import tf_rank
+from bot.core.timeframes import TF_DURATION, tf_rank
 from bot.core.types import InstrumentSpec
 from bot.data.dataset import (
     CsvImportResult,
@@ -84,6 +87,7 @@ class RunnerService:
 
         self._play_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._bars_cache: dict[tuple[str, int], dict[str, pd.DataFrame]] = {}
 
         self._ensure_active_config()
 
@@ -436,18 +440,19 @@ class RunnerService:
 
     # ------------------------------------------------------------------ trades
     @_locked
-    def list_trades(self, status: str | None = None) -> list[sqlite3.Row]:
-        if self.run_id is None:
+    def list_trades(
+        self, status: str | None = None, run_id: int | None = None
+    ) -> list[sqlite3.Row]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         if status:
             cur = self.conn.execute(
                 "SELECT * FROM trade WHERE run_id=? AND status=? ORDER BY id DESC",
-                (self.run_id, status),
+                (rid, status),
             )
         else:
-            cur = self.conn.execute(
-                "SELECT * FROM trade WHERE run_id=? ORDER BY id DESC", (self.run_id,)
-            )
+            cur = self.conn.execute("SELECT * FROM trade WHERE run_id=? ORDER BY id DESC", (rid,))
         return list(cur.fetchall())
 
     @_locked
@@ -466,12 +471,17 @@ class RunnerService:
     # ---------------------------------------------------------------- decisions
     @_locked
     def list_decisions(
-        self, limit: int = 50, reason: str | None = None, outcome: str | None = None
+        self,
+        limit: int = 50,
+        reason: str | None = None,
+        outcome: str | None = None,
+        run_id: int | None = None,
     ) -> list[sqlite3.Row]:
-        if self.run_id is None:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         query = "SELECT * FROM decision WHERE run_id=?"
-        params: list[Any] = [self.run_id]
+        params: list[Any] = [rid]
         if reason:
             query += " AND reason=?"
             params.append(reason)
@@ -498,24 +508,229 @@ class RunnerService:
         return list(cur.fetchall())
 
     @_locked
-    def decision_stats(self) -> dict[str, int]:
-        if self.run_id is None:
+    def decision_stats(self, run_id: int | None = None) -> dict[str, int]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return {}
         cur = self.conn.execute(
-            "SELECT reason, COUNT(*) FROM decision WHERE run_id=? GROUP BY reason", (self.run_id,)
+            "SELECT reason, COUNT(*) FROM decision WHERE run_id=? GROUP BY reason", (rid,)
         )
         return {row[0]: row[1] for row in cur.fetchall()}
 
     # ------------------------------------------------------------------ equity
     @_locked
-    def list_equity_points(self, limit: int = 500) -> list[sqlite3.Row]:
-        if self.run_id is None:
+    def list_equity_points(self, limit: int = 500, run_id: int | None = None) -> list[sqlite3.Row]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         cur = self.conn.execute(
             "SELECT * FROM equity_point WHERE run_id=? ORDER BY id DESC LIMIT ?",
-            (self.run_id, limit),
+            (rid, limit),
         )
         return list(reversed(cur.fetchall()))
+
+    # ---------------------------------------------------------- run registry (plan 03)
+    @_locked
+    def get_run_row(self, run_id: int) -> sqlite3.Row | None:
+        cur = self.conn.execute("SELECT * FROM run WHERE id=?", (run_id,))
+        row: sqlite3.Row | None = cur.fetchone()
+        return row
+
+    @_locked
+    def list_runs(self) -> list[dict[str, Any]]:
+        cur = self.conn.execute(
+            "SELECT r.*, cv.version AS config_version, "
+            "(SELECT COUNT(*) FROM equity_point ep WHERE ep.run_id = r.id) AS bars_processed, "
+            "(SELECT ep.equity FROM equity_point ep WHERE ep.run_id = r.id "
+            " ORDER BY ep.id DESC LIMIT 1) AS final_equity, "
+            "(SELECT COUNT(*) FROM trade t WHERE t.run_id = r.id AND t.status='CLOSED') "
+            " AS closed_trades "
+            "FROM run r JOIN config_version cv ON cv.id = r.config_version_id "
+            "ORDER BY r.id DESC"
+        )
+        return [
+            {
+                "id": row["id"],
+                "dataset_id": row["dataset_id"],
+                "config_version_id": row["config_version_id"],
+                "config_version": row["config_version"],
+                "symbol": row["symbol"],
+                "status": row["status"],
+                "starting_equity": row["starting_equity"],
+                "created_at_utc": row["created_at_utc"],
+                "bars_processed": row["bars_processed"],
+                "final_equity": row["final_equity"],
+                "closed_trades": row["closed_trades"],
+                "is_active": row["id"] == self.run_id,
+            }
+            for row in cur.fetchall()
+        ]
+
+    def _run_config(self, run: sqlite3.Row) -> BotConfig:
+        cur = self.conn.execute(
+            "SELECT config_json FROM config_version WHERE id=?", (run["config_version_id"],)
+        )
+        row = cur.fetchone()
+        assert row is not None  # FK guarantees the version exists
+        return BotConfig.model_validate_json(row["config_json"])
+
+    @_locked
+    def run_report(self, run_id: int) -> RunReport:
+        run = self.get_run_row(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        closed = [
+            dict(r)
+            for r in self.conn.execute(
+                "SELECT * FROM trade WHERE run_id=? AND status='CLOSED' ORDER BY id", (run_id,)
+            )
+        ]
+        equity = [
+            float(r[0])
+            for r in self.conn.execute(
+                "SELECT equity FROM equity_point WHERE run_id=? ORDER BY id", (run_id,)
+            )
+        ]
+        blocks = {
+            str(r[0]): int(r[1])
+            for r in self.conn.execute(
+                "SELECT df.filter_id, COUNT(*) FROM decision_filter df "
+                "JOIN decision d ON d.id = df.decision_id "
+                "WHERE d.run_id=? AND df.blocking=1 GROUP BY df.filter_id",
+                (run_id,),
+            )
+        }
+        return compute_run_report(
+            closed,
+            equity,
+            float(run["starting_equity"]),
+            self._run_config(run).timeframe,
+            self.decision_stats(run_id=run_id),
+            blocks,
+        )
+
+    @_locked
+    def compare_runs(self, run_id_a: int, run_id_b: int) -> dict[str, Any]:
+        run_a, run_b = self.get_run_row(run_id_a), self.get_run_row(run_id_b)
+        if run_a is None:
+            raise KeyError(run_id_a)
+        if run_b is None:
+            raise KeyError(run_id_b)
+        report_a, report_b = self.run_report(run_id_a), self.run_report(run_id_b)
+        return {
+            "run_a": run_id_a,
+            "run_b": run_id_b,
+            "dataset_a": run_a["dataset_id"],
+            "dataset_b": run_b["dataset_id"],
+            "config_version_a": run_a["config_version_id"],
+            "config_version_b": run_b["config_version_id"],
+            "same_dataset": run_a["dataset_id"] == run_b["dataset_id"],
+            "same_config_version": run_a["config_version_id"] == run_b["config_version_id"],
+            "metrics": diff_reports(report_a, report_b),
+            "reason_histogram": diff_histograms(
+                report_a.reason_histogram, report_b.reason_histogram
+            ),
+        }
+
+    @_locked
+    def delete_run(self, run_id: int) -> None:
+        """Raises KeyError if unknown, ValueError if the run is the active one."""
+        if self.get_run_row(run_id) is None:
+            raise KeyError(run_id)
+        if run_id == self.run_id:
+            raise ValueError("cannot delete the active run — reset it first")
+        # trade <-> decision reference each other; break the cycle before deleting.
+        self.conn.execute("UPDATE trade SET decision_id=NULL WHERE run_id=?", (run_id,))
+        self.conn.execute("UPDATE decision SET trade_id=NULL WHERE run_id=?", (run_id,))
+        self.conn.execute(
+            "DELETE FROM decision_filter WHERE decision_id IN "
+            "(SELECT id FROM decision WHERE run_id=?)",
+            (run_id,),
+        )
+        self.conn.execute(
+            "DELETE FROM trade_event WHERE trade_id IN (SELECT id FROM trade WHERE run_id=?)",
+            (run_id,),
+        )
+        self.conn.execute("DELETE FROM decision WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM trade WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM equity_point WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM account_state WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM breakout_state WHERE run_id=?", (run_id,))
+        self.conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+        self.conn.commit()
+
+    @_locked
+    def run_bars(
+        self,
+        run_id: int,
+        tf: str,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """OHLC bars of the run's dataset, only bars CLOSED at the run's current clock
+        (open_ts + tf_duration <= last processed bar close — no future bars, C11)."""
+        run = self.get_run_row(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if tf not in TF_DURATION:
+            raise ConfigError(f"unknown timeframe {tf!r}")
+        cur = self.conn.execute(
+            "SELECT bar_ts_utc FROM equity_point WHERE run_id=? ORDER BY id DESC LIMIT 1",
+            (run_id,),
+        )
+        last = cur.fetchone()
+        if last is None:
+            return []  # no bar processed yet -> nothing is closed for this run
+
+        frames = self._price_frames(run["dataset_id"], int(run["config_version_id"]))
+        df = frames.get(tf)
+        if df is None:
+            return []
+
+        def _aligned(ts_str: str) -> pd.Timestamp:
+            """Timestamps arrive with or without an offset (query strings often lose
+            the `+`); align tz-awareness with the frame index so comparisons work."""
+            t = pd.Timestamp(ts_str)
+            index_tz = getattr(df.index, "tz", None)
+            if index_tz is not None:
+                return t.tz_localize(index_tz) if t.tz is None else t.tz_convert(index_tz)
+            return t.tz_convert("UTC").tz_localize(None) if t.tz is not None else t
+
+        visible = df[df.index + TF_DURATION[tf] <= _aligned(last["bar_ts_utc"])]
+        if from_ts:
+            visible = visible[visible.index >= _aligned(from_ts)]
+        if to_ts:
+            visible = visible[visible.index <= _aligned(to_ts)]
+        return [
+            {
+                "ts_utc": ts.isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+            for ts, row in visible.iterrows()
+        ]
+
+    def _price_frames(self, dataset_id: str, config_version_id: int) -> dict[str, pd.DataFrame]:
+        """Small per-(dataset, config-version) cache: bundle loading regenerates/reads the
+        whole dataset, far too slow to do per chart poll."""
+        key = (dataset_id, config_version_id)
+        cached = self._bars_cache.get(key)
+        if cached is not None:
+            return cached
+        cur = self.conn.execute(
+            "SELECT config_json FROM config_version WHERE id=?", (config_version_id,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise KeyError(config_version_id)
+        cfg = BotConfig.model_validate_json(row["config_json"])
+        bundle = load_bundle_for_dataset(self.conn, dataset_id, cfg)
+        if len(self._bars_cache) >= 4:
+            self._bars_cache.pop(next(iter(self._bars_cache)))
+        self._bars_cache[key] = bundle.price
+        return bundle.price
 
     # ----------------------------------------------------------------- symbols
     def list_symbols(self) -> list[dict[str, str]]:

@@ -177,6 +177,98 @@ export interface RunOut {
   is_playing: boolean
 }
 
+export interface RunSummaryOut {
+  id: number
+  dataset_id: string
+  config_version_id: number
+  config_version: number
+  symbol: string
+  status: string
+  starting_equity: number
+  created_at_utc: string
+  bars_processed: number
+  final_equity: number | null
+  closed_trades: number
+  is_active: boolean
+}
+
+export interface HistogramBinOut {
+  label: string
+  lo: number | null
+  hi: number | null
+  count: number
+}
+
+export interface TradeStatsOut {
+  n_total: number
+  n_by_strategy: Record<string, number>
+  n_by_direction: Record<string, number>
+  n_win: number
+  n_loss: number
+  n_breakeven: number
+  win_rate: number | null
+  profit_factor: number | null
+  expectancy_r: number | null
+  avg_win: number | null
+  max_win: number | null
+  avg_loss: number | null
+  max_loss: number | null
+  avg_holding_hours: number | null
+  r_histogram: HistogramBinOut[]
+}
+
+export interface SeriesStatsOut {
+  final_equity: number
+  total_return_pct: number
+  max_drawdown_abs: number
+  max_drawdown_pct: number
+  longest_drawdown_bars: number
+  sharpe: number | null
+  n_bars: number
+}
+
+export interface RunReportOut {
+  run_id: number
+  overall: TradeStatsOut
+  per_strategy: Record<string, TradeStatsOut>
+  series: SeriesStatsOut
+  reason_histogram: Record<string, number>
+  filter_block_counts: Record<string, number>
+}
+
+export interface MetricDiffOut {
+  a: number | null
+  b: number | null
+  delta: number | null
+}
+
+export interface HistCountDiffOut {
+  a: number
+  b: number
+  delta: number
+}
+
+export interface RunCompareOut {
+  run_a: number
+  run_b: number
+  dataset_a: string
+  dataset_b: string
+  config_version_a: number
+  config_version_b: number
+  same_dataset: boolean
+  same_config_version: boolean
+  metrics: Record<string, MetricDiffOut>
+  reason_histogram: Record<string, HistCountDiffOut>
+}
+
+export interface BarOut {
+  ts_utc: string
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
 export interface RunStepOut {
   bar_ts: string
   reason: string

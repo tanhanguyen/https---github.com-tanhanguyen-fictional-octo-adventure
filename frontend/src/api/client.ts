@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type {
   AccountOut,
+  BarOut,
   ConfigOut,
   ConfigSchemaOut,
   ConfigVersionOut,
@@ -10,8 +11,11 @@ import type {
   DecisionStatsOut,
   EquityPointOut,
   FilterRowOut,
+  RunCompareOut,
   RunOut,
+  RunReportOut,
   RunStepOut,
+  RunSummaryOut,
   SymbolOut,
   TradeDetailOut,
   TradeOut,
@@ -65,6 +69,24 @@ export const api = {
       .post<RunOut>('/run', { seed, bars, dataset_id: datasetId ?? null })
       .then((r) => r.data),
   step: () => http.post<RunStepOut>('/run/step').then((r) => r.data),
+
+  listRuns: () => http.get<RunSummaryOut[]>('/runs').then((r) => r.data),
+  getRunReport: (id: number) =>
+    http.get<RunReportOut>(`/runs/${id}/report`).then((r) => r.data),
+  compareRuns: (a: number, b: number) =>
+    http.get<RunCompareOut>('/runs/compare', { params: { a, b } }).then((r) => r.data),
+  deleteRun: (id: number) =>
+    http.delete<{ status: string }>(`/runs/${id}`).then((r) => r.data),
+  getRunEquity: (id: number, limit = 100000) =>
+    http.get<EquityPointOut[]>(`/runs/${id}/equity`, { params: { limit } }).then((r) => r.data),
+  getRunBars: (id: number, tf: string, from?: string, to?: string) =>
+    http
+      .get<BarOut[]>(`/runs/${id}/bars`, { params: { tf, from, to } })
+      .then((r) => r.data),
+  getRunTrades: (id: number, status?: string) =>
+    http
+      .get<TradeOut[]>(`/runs/${id}/trades`, { params: status ? { status } : {} })
+      .then((r) => r.data),
   play: (intervalMs = 200) =>
     http.post<RunOut>('/run/play', { interval_ms: intervalMs }).then((r) => r.data),
   pause: () => http.post<RunOut | null>('/run/pause').then((r) => r.data),

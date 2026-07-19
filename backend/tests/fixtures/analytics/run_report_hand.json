@@ -1,0 +1,54 @@
+{
+  "description": "Hand-derived RunReport fixture (plan 03): 6 closed trades + 7 equity points, starting_equity 10000, timeframe 1H.",
+  "starting_equity": 10000.0,
+  "timeframe": "1H",
+  "trades": [
+    {"strategy": "BREAKOUT", "direction": "BUY", "result": "WIN", "pnl_amount": 300.0, "pnl_r": 2.0, "opened_at_utc": "2024-01-01T00:00:00", "closed_at_utc": "2024-01-01T08:00:00"},
+    {"strategy": "BREAKOUT", "direction": "SELL", "result": "LOSS", "pnl_amount": -150.0, "pnl_r": -1.0, "opened_at_utc": "2024-01-01T10:00:00", "closed_at_utc": "2024-01-01T14:00:00"},
+    {"strategy": "MEAN_REVERSION", "direction": "BUY", "result": "WIN", "pnl_amount": 100.0, "pnl_r": 1.0, "opened_at_utc": "2024-01-02T00:00:00", "closed_at_utc": "2024-01-02T06:00:00"},
+    {"strategy": "BREAKOUT", "direction": "BUY", "result": "BREAKEVEN", "pnl_amount": 30.0, "pnl_r": 0.2, "opened_at_utc": "2024-01-02T10:00:00", "closed_at_utc": "2024-01-02T20:00:00"},
+    {"strategy": "MEAN_REVERSION", "direction": "SELL", "result": "LOSS", "pnl_amount": -250.0, "pnl_r": -1.25, "opened_at_utc": "2024-01-03T00:00:00", "closed_at_utc": "2024-01-03T12:00:00"},
+    {"strategy": "BREAKOUT", "direction": "SELL", "result": "WIN", "pnl_amount": 450.0, "pnl_r": 3.0, "opened_at_utc": "2024-01-04T00:00:00", "closed_at_utc": "2024-01-04T10:00:00"}
+  ],
+  "equity": [10100.0, 10050.0, 9950.0, 10200.0, 10150.0, 10100.0, 10250.0],
+  "expected": {
+    "overall": {
+      "n_total": 6,
+      "n_by_strategy": {"BREAKOUT": 4, "MEAN_REVERSION": 2},
+      "n_by_direction": {"BUY": 3, "SELL": 3},
+      "n_win": 3, "n_loss": 2, "n_breakeven": 1,
+      "win_rate": 0.5,
+      "profit_factor": 2.2,
+      "expectancy_r": 0.6583333333333333,
+      "avg_win": 220.0, "max_win": 450.0,
+      "avg_loss": -200.0, "max_loss": -250.0,
+      "avg_holding_hours": 8.333333333333334,
+      "r_histogram_nonzero": {"[-1.5,-1)": 1, "[-1,-0.5)": 1, "[0,0.5)": 1, "[1,1.5)": 1, "[2,2.5)": 1, ">=3": 1}
+    },
+    "per_strategy": {
+      "BREAKOUT": {
+        "n_total": 4, "n_win": 2, "n_loss": 1, "n_breakeven": 1,
+        "win_rate": 0.5, "profit_factor": 5.2, "expectancy_r": 1.05,
+        "avg_win": 260.0, "max_win": 450.0, "avg_loss": -150.0, "max_loss": -150.0,
+        "avg_holding_hours": 8.0
+      },
+      "MEAN_REVERSION": {
+        "n_total": 2, "n_win": 1, "n_loss": 1, "n_breakeven": 0,
+        "win_rate": 0.5, "profit_factor": 0.4, "expectancy_r": -0.125,
+        "avg_win": 100.0, "max_win": 100.0, "avg_loss": -250.0, "max_loss": -250.0,
+        "avg_holding_hours": 9.0
+      }
+    },
+    "series": {
+      "final_equity": 10250.0,
+      "total_return_pct": 2.5,
+      "max_drawdown_abs": 150.0,
+      "max_drawdown_pct": 1.4851485148514851,
+      "longest_drawdown_bars": 2,
+      "sharpe": 25.733235608956875,
+      "n_bars": 7
+    }
+  },
+  "tolerance": "rel=1e-9",
+  "derivation": "Counts: 6 trades = 4 BREAKOUT + 2 MEAN_REVERSION = 3 BUY + 3 SELL; results 3 WIN / 2 LOSS / 1 BREAKEVEN -> win_rate = 3/6 = 0.5 (D8: BREAKEVEN counts against). Positive pnl: 300+100+30+450 = 880 (gross win, includes the +30 BREAKEVEN by convention: profit factor is over signed pnl, not result labels); negative pnl: 150+250 = 400 (gross loss) -> profit_factor = 880/400 = 2.2. expectancy_r = (2.0-1.0+1.0+0.2-1.25+3.0)/6 = 3.95/6 = 0.658333333. avg_win = 880/4 = 220, max_win = 450; avg_loss = -(400/2) = -200, max_loss = -250 (most negative). Holding hours per trade: 8,4,6,10,12,10 -> mean 50/6 = 8.333333333. R histogram (0.5-wide bins on [-2,3), open ends): -1.25 -> [-1.5,-1); -1.0 -> [-1,-0.5) (lo edge inclusive); 0.2 -> [0,0.5); 1.0 -> [1,1.5); 2.0 -> [2,2.5); 3.0 -> >=3. BREAKOUT subset (trades 1,2,4,6): gross win 300+30+450=780, gross loss 150 -> pf 5.2; expectancy (2.0-1.0+0.2+3.0)/4 = 1.05; holds (8+4+10+10)/4 = 8. MEAN_REVERSION subset (3,5): pf 100/250 = 0.4; expectancy (1.0-1.25)/2 = -0.125; holds (6+12)/2 = 9. Series, peak starts at 10000: 10100 new peak; 10050,9950 in drawdown (streak 2, dd_abs max 10100-9950 = 150, dd_pct 150/10100 = 1.485148515%); 10200 new peak; 10150,10100 in drawdown (streak 2, dd 100 < 150); 10250 new peak -> longest streak 2. final 10250, return (10250-10000)/10000 = 2.5%. Sharpe: 7 per-bar returns r_i = eq_i/eq_{i-1} - 1 with eq_0 := 10000 (first return 0.01, 10050/10100-1 = -0.004950495..., etc.); mean = 0.0036069000464, sample std (ddof=1) = 0.0131187291036; annualization sqrt(365*24) for 1H bars -> sharpe = mean/std*sqrt(8760) = 25.7332356090 (mean/std hand-checked to 4 significant digits, full precision from the formula per the indicator-fixture spot-check rule)."
+}
