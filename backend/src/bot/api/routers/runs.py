@@ -117,10 +117,11 @@ def run_bars(
     tf: str = "1H",
     from_ts: str | None = Query(None, alias="from"),
     to_ts: str | None = Query(None, alias="to"),
+    limit: int = Query(1000, ge=1, le=20000),
     service: RunnerService = Depends(get_runner_service),
 ) -> list[BarOut]:
     try:
-        bars = service.run_bars(run_id, tf, from_ts, to_ts)
+        bars = service.run_bars(run_id, tf, from_ts, to_ts, limit)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     except ConfigError as exc:

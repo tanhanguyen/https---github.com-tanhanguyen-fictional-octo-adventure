@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api/client'
+import { api, errorDetail } from '../api/client'
 import { usePolling } from '../hooks/usePolling'
 
 export function DatasetsPage() {
@@ -19,9 +19,7 @@ export function DatasetsPage() {
     try {
       await fn()
     } catch (err) {
-      const detail =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setError(detail ?? String(err))
+      setError(errorDetail(err))
     } finally {
       setBusy(false)
     }

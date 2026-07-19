@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api/client'
+import { api, errorDetail } from '../api/client'
 import { AccountPanel } from '../components/AccountPanel'
 import { CandleChart } from '../components/CandleChart'
 import { EquityChart } from '../components/EquityChart'
@@ -31,7 +31,7 @@ export function Dashboard() {
     Boolean(run?.is_playing),
     [run?.id],
   )
-  const { data: bars, refetch: refetchBars } = usePolling(
+  const { data: bars, error: barsError, refetch: refetchBars } = usePolling(
     () => (run ? api.getRunBars(run.id, chartTf) : Promise.resolve([])),
     1000,
     Boolean(run?.is_playing),
@@ -64,10 +64,12 @@ export function Dashboard() {
             ))}
           </select>
         </div>
-        {run ? (
-          <CandleChart bars={bars ?? []} trades={trades ?? []} />
-        ) : (
+        {!run ? (
           <p className="muted">Chưa có run — tạo run để xem chart.</p>
+        ) : barsError ? (
+          <p className="pill loss">{errorDetail(barsError)}</p>
+        ) : (
+          <CandleChart bars={bars ?? []} trades={trades ?? []} />
         )}
       </div>
       <div className="card">

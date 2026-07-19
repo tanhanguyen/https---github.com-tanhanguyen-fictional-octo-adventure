@@ -23,6 +23,12 @@ import type {
 
 const http = axios.create({ baseURL: '/api' })
 
+/** FastAPI puts the human-readable message in `detail`; fall back to the raw error. */
+export function errorDetail(err: unknown): string {
+  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+  return detail ?? String(err)
+}
+
 export const api = {
   health: () => http.get<{ status: string }>('/health').then((r) => r.data),
 

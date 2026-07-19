@@ -92,6 +92,20 @@ def test_profit_factor_none_when_no_losses() -> None:
     assert stats.avg_holding_hours is None
 
 
+def test_unlabelled_close_counts_against_win_rate() -> None:
+    """A CLOSED trade with no `result` must not silently vanish from the denominator."""
+    trades = [
+        {"strategy": "BREAKOUT", "direction": "BUY", "result": "WIN", "pnl_amount": 10.0,
+         "pnl_r": 1.0, "opened_at_utc": None, "closed_at_utc": None},
+        {"strategy": "BREAKOUT", "direction": "BUY", "result": None, "pnl_amount": None,
+         "pnl_r": None, "opened_at_utc": None, "closed_at_utc": None},
+    ]
+    stats = compute_trade_stats(trades)
+    assert stats.n_total == 2
+    assert (stats.n_win, stats.n_loss, stats.n_breakeven) == (1, 0, 0)
+    assert stats.win_rate == 0.5  # not 1.0 -- the unlabelled close is a non-win
+
+
 def test_flat_equity_has_no_sharpe() -> None:
     series = compute_series_stats([10000.0, 10000.0, 10000.0], 10000.0, "1H")
     assert series.sharpe is None

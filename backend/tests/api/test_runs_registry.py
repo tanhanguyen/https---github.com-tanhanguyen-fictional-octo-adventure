@@ -72,6 +72,11 @@ def test_compare_runs(client: TestClient) -> None:
     assert body["same_config_version"] is True
     assert body["metrics"]["n_total"]["a"] is not None
     assert set(body["metrics"]) >= {"win_rate", "final_equity", "max_drawdown_pct"}
+    # compare reports the config VERSION number, the same one /api/runs shows -- not the
+    # config_version row id.
+    by_id = {r["id"]: r for r in client.get("/api/runs").json()}
+    assert body["config_version_a"] == by_id[run_a]["config_version"]
+    assert body["config_version_b"] == by_id[run_b]["config_version"]
     hist_diff = body["reason_histogram"]
     assert sum(v["a"] for v in hist_diff.values()) == 100
     assert sum(v["b"] for v in hist_diff.values()) == 60
@@ -80,24 +85,37 @@ def test_compare_runs(client: TestClient) -> None:
 
 
 def test_bars_no_lookahead_grows_one_candle_per_step(client: TestClient) -> None:
+    # One chart candle per step only holds at the run's OWN timeframe; a coarser chart tf
+    # advances slower (30 steps of 15m = 7.5h = 7 closed 1H candles).
+    run_tf: str = client.get("/api/config").json()["config"]["timeframe"]
     run_id = _make_run(client, seed=42, bars=300, steps=30)
 
-    bars = client.get(f"/api/runs/{run_id}/bars?tf=1H").json()
+    bars = client.get(f"/api/runs/{run_id}/bars", params={"tf": run_tf}).json()
     # exactly the processed bars are closed -- never more (C11)
     assert len(bars) == 30
     assert list(bars[0]) == ["ts_utc", "open", "high", "low", "close"]
 
     client.post("/api/run/step")
-    bars2 = client.get(f"/api/runs/{run_id}/bars?tf=1H").json()
+    bars2 = client.get(f"/api/runs/{run_id}/bars", params={"tf": run_tf}).json()
     assert len(bars2) == 31
     assert bars2[:30] == bars
+
+    # a coarser chart tf never shows a candle that has not closed yet (C11)
+    last_close = client.get(f"/api/runs/{run_id}/equity").json()[-1]["bar_ts_utc"]
+    hourly = client.get(f"/api/runs/{run_id}/bars", params={"tf": "1H"}).json()
+    assert hourly, "expected at least one closed 1H candle after 31 steps"
+    assert max(b["ts_utc"] for b in hourly) < last_close
 
     # range filter
     windowed = client.get(
         f"/api/runs/{run_id}/bars",
-        params={"tf": "1H", "from": bars[5]["ts_utc"], "to": bars[10]["ts_utc"]},
+        params={"tf": run_tf, "from": bars[5]["ts_utc"], "to": bars[10]["ts_utc"]},
     ).json()
     assert [b["ts_utc"] for b in windowed] == [b["ts_utc"] for b in bars[5:11]]
+
+    # limit keeps the most recent bars
+    tail = client.get(f"/api/runs/{run_id}/bars", params={"tf": run_tf, "limit": 5}).json()
+    assert tail == bars2[-5:]
 
     assert client.get(f"/api/runs/{run_id}/bars?tf=nope").status_code == 400
     assert client.get("/api/runs/99999/bars").status_code == 404

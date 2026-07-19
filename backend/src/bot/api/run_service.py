@@ -13,6 +13,7 @@ import json
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -42,6 +43,9 @@ from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
 
 _R = TypeVar("_R")
+
+#: How many (dataset, config-version) price bundles `_price_frames` keeps resident.
+_BARS_CACHE_MAX = 4
 
 
 def _locked(fn: Callable[..., _R]) -> Callable[..., _R]:
@@ -87,7 +91,7 @@ class RunnerService:
 
         self._play_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._bars_cache: dict[tuple[str, int], dict[str, pd.DataFrame]] = {}
+        self._bars_cache: OrderedDict[tuple[str, int], dict[str, pd.DataFrame]] = OrderedDict()
 
         self._ensure_active_config()
 
@@ -238,7 +242,7 @@ class RunnerService:
     @_locked
     def import_csv(self, path: str, symbol: str, native_tf: str) -> CsvImportResult:
         _, cfg = self.get_active_config()
-        return import_csv_dataset(
+        result = import_csv_dataset(
             self.conn,
             Path(path),
             symbol,
@@ -246,6 +250,9 @@ class RunnerService:
             cfg.trading_day_rollover_tz,
             cfg.trading_day_rollover_time,
         )
+        # Re-importing can replace the bars behind an existing dataset id.
+        self._invalidate_bars_cache(result.dataset_id)
+        return result
 
     # ------------------------------------------------------------- run/step
     def _build_instrument(self, cfg: BotConfig) -> InstrumentSpec:
@@ -566,12 +573,16 @@ class RunnerService:
             for row in cur.fetchall()
         ]
 
+    def _config_version_row(self, config_version_id: int) -> sqlite3.Row:
+        """The config_version row behind an id. Raises KeyError if it is gone."""
+        cur = self.conn.execute("SELECT * FROM config_version WHERE id=?", (config_version_id,))
+        row: sqlite3.Row | None = cur.fetchone()
+        if row is None:
+            raise KeyError(config_version_id)
+        return row
+
     def _run_config(self, run: sqlite3.Row) -> BotConfig:
-        cur = self.conn.execute(
-            "SELECT config_json FROM config_version WHERE id=?", (run["config_version_id"],)
-        )
-        row = cur.fetchone()
-        assert row is not None  # FK guarantees the version exists
+        row = self._config_version_row(int(run["config_version_id"]))
         return BotConfig.model_validate_json(row["config_json"])
 
     @_locked
@@ -617,13 +628,17 @@ class RunnerService:
         if run_b is None:
             raise KeyError(run_id_b)
         report_a, report_b = self.run_report(run_id_a), self.run_report(run_id_b)
+        # The user-facing "vN" is config_version.version, NOT the config_version row id —
+        # list_runs exposes the same number as `config_version`.
+        version_a = int(self._config_version_row(int(run_a["config_version_id"]))["version"])
+        version_b = int(self._config_version_row(int(run_b["config_version_id"]))["version"])
         return {
             "run_a": run_id_a,
             "run_b": run_id_b,
             "dataset_a": run_a["dataset_id"],
             "dataset_b": run_b["dataset_id"],
-            "config_version_a": run_a["config_version_id"],
-            "config_version_b": run_b["config_version_id"],
+            "config_version_a": version_a,
+            "config_version_b": version_b,
             "same_dataset": run_a["dataset_id"] == run_b["dataset_id"],
             "same_config_version": run_a["config_version_id"] == run_b["config_version_id"],
             "metrics": diff_reports(report_a, report_b),
@@ -639,24 +654,30 @@ class RunnerService:
             raise KeyError(run_id)
         if run_id == self.run_id:
             raise ValueError("cannot delete the active run — reset it first")
-        # trade <-> decision reference each other; break the cycle before deleting.
-        self.conn.execute("UPDATE trade SET decision_id=NULL WHERE run_id=?", (run_id,))
-        self.conn.execute("UPDATE decision SET trade_id=NULL WHERE run_id=?", (run_id,))
-        self.conn.execute(
-            "DELETE FROM decision_filter WHERE decision_id IN "
-            "(SELECT id FROM decision WHERE run_id=?)",
-            (run_id,),
-        )
-        self.conn.execute(
-            "DELETE FROM trade_event WHERE trade_id IN (SELECT id FROM trade WHERE run_id=?)",
-            (run_id,),
-        )
-        self.conn.execute("DELETE FROM decision WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM trade WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM equity_point WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM account_state WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM breakout_state WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+        # All-or-nothing: a half-deleted run (rows in `run` but no decisions) would be
+        # silently committed by the next unrelated commit() on this shared connection.
+        try:
+            # trade <-> decision reference each other; break the cycle before deleting.
+            self.conn.execute("UPDATE trade SET decision_id=NULL WHERE run_id=?", (run_id,))
+            self.conn.execute("UPDATE decision SET trade_id=NULL WHERE run_id=?", (run_id,))
+            self.conn.execute(
+                "DELETE FROM decision_filter WHERE decision_id IN "
+                "(SELECT id FROM decision WHERE run_id=?)",
+                (run_id,),
+            )
+            self.conn.execute(
+                "DELETE FROM trade_event WHERE trade_id IN (SELECT id FROM trade WHERE run_id=?)",
+                (run_id,),
+            )
+            self.conn.execute("DELETE FROM decision WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM trade WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM equity_point WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM account_state WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM breakout_state WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+        except Exception:
+            self.conn.rollback()
+            raise
         self.conn.commit()
 
     @_locked
@@ -666,9 +687,13 @@ class RunnerService:
         tf: str,
         from_ts: str | None = None,
         to_ts: str | None = None,
+        limit: int = 1000,
     ) -> list[dict[str, Any]]:
         """OHLC bars of the run's dataset, only bars CLOSED at the run's current clock
-        (open_ts + tf_duration <= last processed bar close — no future bars, C11)."""
+        (open_ts + tf_duration <= last processed bar close — no future bars, C11).
+
+        Returns at most `limit` bars, the most recent ones: this is polled once a second
+        by the dashboard chart and a dataset can hold tens of thousands of bars."""
         run = self.get_run_row(run_id)
         if run is None:
             raise KeyError(run_id)
@@ -685,7 +710,11 @@ class RunnerService:
         frames = self._price_frames(run["dataset_id"], int(run["config_version_id"]))
         df = frames.get(tf)
         if df is None:
-            return []
+            # Not the same thing as "nothing closed yet" — say so instead of a blank chart.
+            raise ConfigError(
+                f"timeframe {tf!r} is not available for this dataset "
+                f"(available: {', '.join(sorted(frames))})"
+            )
 
         def _aligned(ts_str: str) -> pd.Timestamp:
             """Timestamps arrive with or without an offset (query strings often lose
@@ -701,36 +730,47 @@ class RunnerService:
             visible = visible[visible.index >= _aligned(from_ts)]
         if to_ts:
             visible = visible[visible.index <= _aligned(to_ts)]
+        if limit > 0 and len(visible) > limit:
+            visible = visible.iloc[-limit:]
+        # Column-wise .tolist() instead of iterrows(): the latter boxes a Series per bar.
         return [
-            {
-                "ts_utc": ts.isoformat(),
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-            }
-            for ts, row in visible.iterrows()
+            {"ts_utc": ts.isoformat(), "open": o, "high": h, "low": lo, "close": c}
+            for ts, o, h, lo, c in zip(
+                visible.index,
+                visible["open"].astype(float).tolist(),
+                visible["high"].astype(float).tolist(),
+                visible["low"].astype(float).tolist(),
+                visible["close"].astype(float).tolist(),
+                strict=True,
+            )
         ]
 
     def _price_frames(self, dataset_id: str, config_version_id: int) -> dict[str, pd.DataFrame]:
-        """Small per-(dataset, config-version) cache: bundle loading regenerates/reads the
-        whole dataset, far too slow to do per chart poll."""
+        """Small per-(dataset, config-version) LRU cache: bundle loading regenerates/reads
+        the whole dataset, far too slow to do per chart poll. Invalidated by
+        `_invalidate_bars_cache` whenever a dataset's underlying bars can have changed."""
         key = (dataset_id, config_version_id)
         cached = self._bars_cache.get(key)
         if cached is not None:
+            self._bars_cache.move_to_end(key)  # LRU: don't evict the frame in active use
             return cached
-        cur = self.conn.execute(
-            "SELECT config_json FROM config_version WHERE id=?", (config_version_id,)
+        cfg = BotConfig.model_validate_json(
+            self._config_version_row(config_version_id)["config_json"]
         )
-        row = cur.fetchone()
-        if row is None:
-            raise KeyError(config_version_id)
-        cfg = BotConfig.model_validate_json(row["config_json"])
         bundle = load_bundle_for_dataset(self.conn, dataset_id, cfg)
-        if len(self._bars_cache) >= 4:
-            self._bars_cache.pop(next(iter(self._bars_cache)))
+        while len(self._bars_cache) >= _BARS_CACHE_MAX:
+            self._bars_cache.popitem(last=False)
         self._bars_cache[key] = bundle.price
         return bundle.price
+
+    def _invalidate_bars_cache(self, dataset_id: str | None = None) -> None:
+        """Drop cached frames for one dataset (or all). Must be called whenever the bars
+        behind a dataset id can have changed, or the chart serves pre-import prices."""
+        if dataset_id is None:
+            self._bars_cache.clear()
+            return
+        for key in [k for k in self._bars_cache if k[0] == dataset_id]:
+            del self._bars_cache[key]
 
     # ----------------------------------------------------------------- symbols
     def list_symbols(self) -> list[dict[str, str]]:

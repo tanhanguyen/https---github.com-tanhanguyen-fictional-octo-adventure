@@ -2,8 +2,14 @@
 number can be unit-tested against a hand-derived fixture (tests/fixtures/analytics/).
 
 Conventions (pinned by the fixtures):
-- win_rate = WIN / (WIN + LOSS + BREAKEVEN). D8: BREAKEVEN counts as a loss.
+- win_rate = WIN / n_total over closed trades. D8: BREAKEVEN counts as a loss; so does a
+  close with no `result` label (a data bug — counted fail-closed as a non-win rather than
+  dropped from the denominator).
 - profit_factor = gross win / gross loss (absolute); None when there is no losing trade.
+  NOTE: the money metrics (profit_factor, avg/max win/loss) bucket by the SIGN of
+  pnl_amount, not by the `result` label, so a BREAKEVEN that nets +30 after costs counts
+  in gross_win. That is deliberate and pinned by the fixture's `derivation` — it makes
+  profit_factor a pure P&L ratio, at the cost of disagreeing with the D8 win_rate labels.
 - expectancy_r = mean pnl_r over closed trades that have a pnl_r (R = pnl / risk-at-entry,
   already computed by the order engine).
 - avg_loss / max_loss are signed (negative) pnl amounts; max_loss is the most negative.
@@ -128,7 +134,9 @@ def compute_trade_stats(closed_trades: Sequence[Mapping[str, Any]]) -> TradeStat
     for t in closed_trades:
         by_strategy[str(t["strategy"])] += 1
         by_direction[str(t["direction"])] += 1
-        results[str(t["result"])] += 1
+        # An unlabelled close is a data bug; bucket it as UNKNOWN so it stays visible in
+        # n_total and out of n_win, instead of silently vanishing from the denominator.
+        results[str(t["result"]) if t.get("result") is not None else "UNKNOWN"] += 1
         pnl = t.get("pnl_amount")
         if pnl is not None:
             if pnl > 0:
@@ -143,18 +151,18 @@ def compute_trade_stats(closed_trades: Sequence[Mapping[str, Any]]) -> TradeStat
             holds.append(hold)
 
     n_win, n_loss, n_be = results["WIN"], results["LOSS"], results["BREAKEVEN"]
-    n_resulted = n_win + n_loss + n_be
+    n_total = len(closed_trades)
     gross_win = sum(wins)
     gross_loss = -sum(losses)
 
     return TradeStats(
-        n_total=len(closed_trades),
+        n_total=n_total,
         n_by_strategy=dict(by_strategy),
         n_by_direction=dict(by_direction),
         n_win=n_win,
         n_loss=n_loss,
         n_breakeven=n_be,
-        win_rate=n_win / n_resulted if n_resulted else None,
+        win_rate=n_win / n_total if n_total else None,
         profit_factor=gross_win / gross_loss if gross_loss > 0 else None,
         expectancy_r=_mean(rs),
         avg_win=_mean(wins),
