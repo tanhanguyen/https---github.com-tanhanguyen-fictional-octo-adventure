@@ -13,17 +13,21 @@ import json
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TypeVar
 
+import pandas as pd
+
+from bot.analytics.metrics import RunReport, compute_run_report, diff_histograms, diff_reports
 from bot.config.loader import deep_merge, load_default_config, load_instruments
 from bot.config.metadata import metadata_by_field
 from bot.config.models import BotConfig
 from bot.core.clock import Clock
 from bot.core.errors import ConfigError
-from bot.core.timeframes import tf_rank
+from bot.core.timeframes import TF_DURATION, tf_rank
 from bot.core.types import InstrumentSpec
 from bot.data.dataset import (
     CsvImportResult,
@@ -39,6 +43,9 @@ from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
 
 _R = TypeVar("_R")
+
+#: How many (dataset, config-version) price bundles `_price_frames` keeps resident.
+_BARS_CACHE_MAX = 4
 
 
 def _locked(fn: Callable[..., _R]) -> Callable[..., _R]:
@@ -84,6 +91,7 @@ class RunnerService:
 
         self._play_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._bars_cache: OrderedDict[tuple[str, int], dict[str, pd.DataFrame]] = OrderedDict()
 
         self._ensure_active_config()
 
@@ -234,7 +242,7 @@ class RunnerService:
     @_locked
     def import_csv(self, path: str, symbol: str, native_tf: str) -> CsvImportResult:
         _, cfg = self.get_active_config()
-        return import_csv_dataset(
+        result = import_csv_dataset(
             self.conn,
             Path(path),
             symbol,
@@ -242,6 +250,9 @@ class RunnerService:
             cfg.trading_day_rollover_tz,
             cfg.trading_day_rollover_time,
         )
+        # Re-importing can replace the bars behind an existing dataset id.
+        self._invalidate_bars_cache(result.dataset_id)
+        return result
 
     # ------------------------------------------------------------- run/step
     def _build_instrument(self, cfg: BotConfig) -> InstrumentSpec:
@@ -436,18 +447,19 @@ class RunnerService:
 
     # ------------------------------------------------------------------ trades
     @_locked
-    def list_trades(self, status: str | None = None) -> list[sqlite3.Row]:
-        if self.run_id is None:
+    def list_trades(
+        self, status: str | None = None, run_id: int | None = None
+    ) -> list[sqlite3.Row]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         if status:
             cur = self.conn.execute(
                 "SELECT * FROM trade WHERE run_id=? AND status=? ORDER BY id DESC",
-                (self.run_id, status),
+                (rid, status),
             )
         else:
-            cur = self.conn.execute(
-                "SELECT * FROM trade WHERE run_id=? ORDER BY id DESC", (self.run_id,)
-            )
+            cur = self.conn.execute("SELECT * FROM trade WHERE run_id=? ORDER BY id DESC", (rid,))
         return list(cur.fetchall())
 
     @_locked
@@ -466,12 +478,17 @@ class RunnerService:
     # ---------------------------------------------------------------- decisions
     @_locked
     def list_decisions(
-        self, limit: int = 50, reason: str | None = None, outcome: str | None = None
+        self,
+        limit: int = 50,
+        reason: str | None = None,
+        outcome: str | None = None,
+        run_id: int | None = None,
     ) -> list[sqlite3.Row]:
-        if self.run_id is None:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         query = "SELECT * FROM decision WHERE run_id=?"
-        params: list[Any] = [self.run_id]
+        params: list[Any] = [rid]
         if reason:
             query += " AND reason=?"
             params.append(reason)
@@ -498,24 +515,262 @@ class RunnerService:
         return list(cur.fetchall())
 
     @_locked
-    def decision_stats(self) -> dict[str, int]:
-        if self.run_id is None:
+    def decision_stats(self, run_id: int | None = None) -> dict[str, int]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return {}
         cur = self.conn.execute(
-            "SELECT reason, COUNT(*) FROM decision WHERE run_id=? GROUP BY reason", (self.run_id,)
+            "SELECT reason, COUNT(*) FROM decision WHERE run_id=? GROUP BY reason", (rid,)
         )
         return {row[0]: row[1] for row in cur.fetchall()}
 
     # ------------------------------------------------------------------ equity
     @_locked
-    def list_equity_points(self, limit: int = 500) -> list[sqlite3.Row]:
-        if self.run_id is None:
+    def list_equity_points(self, limit: int = 500, run_id: int | None = None) -> list[sqlite3.Row]:
+        rid = run_id if run_id is not None else self.run_id
+        if rid is None:
             return []
         cur = self.conn.execute(
             "SELECT * FROM equity_point WHERE run_id=? ORDER BY id DESC LIMIT ?",
-            (self.run_id, limit),
+            (rid, limit),
         )
         return list(reversed(cur.fetchall()))
+
+    # ---------------------------------------------------------- run registry (plan 03)
+    @_locked
+    def get_run_row(self, run_id: int) -> sqlite3.Row | None:
+        cur = self.conn.execute("SELECT * FROM run WHERE id=?", (run_id,))
+        row: sqlite3.Row | None = cur.fetchone()
+        return row
+
+    @_locked
+    def list_runs(self) -> list[dict[str, Any]]:
+        cur = self.conn.execute(
+            "SELECT r.*, cv.version AS config_version, "
+            "(SELECT COUNT(*) FROM equity_point ep WHERE ep.run_id = r.id) AS bars_processed, "
+            "(SELECT ep.equity FROM equity_point ep WHERE ep.run_id = r.id "
+            " ORDER BY ep.id DESC LIMIT 1) AS final_equity, "
+            "(SELECT COUNT(*) FROM trade t WHERE t.run_id = r.id AND t.status='CLOSED') "
+            " AS closed_trades "
+            "FROM run r JOIN config_version cv ON cv.id = r.config_version_id "
+            "ORDER BY r.id DESC"
+        )
+        return [
+            {
+                "id": row["id"],
+                "dataset_id": row["dataset_id"],
+                "config_version_id": row["config_version_id"],
+                "config_version": row["config_version"],
+                "symbol": row["symbol"],
+                "status": row["status"],
+                "starting_equity": row["starting_equity"],
+                "created_at_utc": row["created_at_utc"],
+                "bars_processed": row["bars_processed"],
+                "final_equity": row["final_equity"],
+                "closed_trades": row["closed_trades"],
+                "is_active": row["id"] == self.run_id,
+            }
+            for row in cur.fetchall()
+        ]
+
+    def _config_version_row(self, config_version_id: int) -> sqlite3.Row:
+        """The config_version row behind an id. Raises KeyError if it is gone."""
+        cur = self.conn.execute("SELECT * FROM config_version WHERE id=?", (config_version_id,))
+        row: sqlite3.Row | None = cur.fetchone()
+        if row is None:
+            raise KeyError(config_version_id)
+        return row
+
+    def _run_config(self, run: sqlite3.Row) -> BotConfig:
+        row = self._config_version_row(int(run["config_version_id"]))
+        return BotConfig.model_validate_json(row["config_json"])
+
+    @_locked
+    def run_report(self, run_id: int) -> RunReport:
+        run = self.get_run_row(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        closed = [
+            dict(r)
+            for r in self.conn.execute(
+                "SELECT * FROM trade WHERE run_id=? AND status='CLOSED' ORDER BY id", (run_id,)
+            )
+        ]
+        equity = [
+            float(r[0])
+            for r in self.conn.execute(
+                "SELECT equity FROM equity_point WHERE run_id=? ORDER BY id", (run_id,)
+            )
+        ]
+        blocks = {
+            str(r[0]): int(r[1])
+            for r in self.conn.execute(
+                "SELECT df.filter_id, COUNT(*) FROM decision_filter df "
+                "JOIN decision d ON d.id = df.decision_id "
+                "WHERE d.run_id=? AND df.blocking=1 GROUP BY df.filter_id",
+                (run_id,),
+            )
+        }
+        return compute_run_report(
+            closed,
+            equity,
+            float(run["starting_equity"]),
+            self._run_config(run).timeframe,
+            self.decision_stats(run_id=run_id),
+            blocks,
+        )
+
+    @_locked
+    def compare_runs(self, run_id_a: int, run_id_b: int) -> dict[str, Any]:
+        run_a, run_b = self.get_run_row(run_id_a), self.get_run_row(run_id_b)
+        if run_a is None:
+            raise KeyError(run_id_a)
+        if run_b is None:
+            raise KeyError(run_id_b)
+        report_a, report_b = self.run_report(run_id_a), self.run_report(run_id_b)
+        # The user-facing "vN" is config_version.version, NOT the config_version row id —
+        # list_runs exposes the same number as `config_version`.
+        version_a = int(self._config_version_row(int(run_a["config_version_id"]))["version"])
+        version_b = int(self._config_version_row(int(run_b["config_version_id"]))["version"])
+        return {
+            "run_a": run_id_a,
+            "run_b": run_id_b,
+            "dataset_a": run_a["dataset_id"],
+            "dataset_b": run_b["dataset_id"],
+            "config_version_a": version_a,
+            "config_version_b": version_b,
+            "same_dataset": run_a["dataset_id"] == run_b["dataset_id"],
+            "same_config_version": run_a["config_version_id"] == run_b["config_version_id"],
+            "metrics": diff_reports(report_a, report_b),
+            "reason_histogram": diff_histograms(
+                report_a.reason_histogram, report_b.reason_histogram
+            ),
+        }
+
+    @_locked
+    def delete_run(self, run_id: int) -> None:
+        """Raises KeyError if unknown, ValueError if the run is the active one."""
+        if self.get_run_row(run_id) is None:
+            raise KeyError(run_id)
+        if run_id == self.run_id:
+            raise ValueError("cannot delete the active run — reset it first")
+        # All-or-nothing: a half-deleted run (rows in `run` but no decisions) would be
+        # silently committed by the next unrelated commit() on this shared connection.
+        try:
+            # trade <-> decision reference each other; break the cycle before deleting.
+            self.conn.execute("UPDATE trade SET decision_id=NULL WHERE run_id=?", (run_id,))
+            self.conn.execute("UPDATE decision SET trade_id=NULL WHERE run_id=?", (run_id,))
+            self.conn.execute(
+                "DELETE FROM decision_filter WHERE decision_id IN "
+                "(SELECT id FROM decision WHERE run_id=?)",
+                (run_id,),
+            )
+            self.conn.execute(
+                "DELETE FROM trade_event WHERE trade_id IN (SELECT id FROM trade WHERE run_id=?)",
+                (run_id,),
+            )
+            self.conn.execute("DELETE FROM decision WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM trade WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM equity_point WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM account_state WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM breakout_state WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM run WHERE id=?", (run_id,))
+        except Exception:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+
+    @_locked
+    def run_bars(
+        self,
+        run_id: int,
+        tf: str,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """OHLC bars of the run's dataset, only bars CLOSED at the run's current clock
+        (open_ts + tf_duration <= last processed bar close — no future bars, C11).
+
+        Returns at most `limit` bars, the most recent ones: this is polled once a second
+        by the dashboard chart and a dataset can hold tens of thousands of bars."""
+        run = self.get_run_row(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if tf not in TF_DURATION:
+            raise ConfigError(f"unknown timeframe {tf!r}")
+        cur = self.conn.execute(
+            "SELECT bar_ts_utc FROM equity_point WHERE run_id=? ORDER BY id DESC LIMIT 1",
+            (run_id,),
+        )
+        last = cur.fetchone()
+        if last is None:
+            return []  # no bar processed yet -> nothing is closed for this run
+
+        frames = self._price_frames(run["dataset_id"], int(run["config_version_id"]))
+        df = frames.get(tf)
+        if df is None:
+            # Not the same thing as "nothing closed yet" — say so instead of a blank chart.
+            raise ConfigError(
+                f"timeframe {tf!r} is not available for this dataset "
+                f"(available: {', '.join(sorted(frames))})"
+            )
+
+        def _aligned(ts_str: str) -> pd.Timestamp:
+            """Timestamps arrive with or without an offset (query strings often lose
+            the `+`); align tz-awareness with the frame index so comparisons work."""
+            t = pd.Timestamp(ts_str)
+            index_tz = getattr(df.index, "tz", None)
+            if index_tz is not None:
+                return t.tz_localize(index_tz) if t.tz is None else t.tz_convert(index_tz)
+            return t.tz_convert("UTC").tz_localize(None) if t.tz is not None else t
+
+        visible = df[df.index + TF_DURATION[tf] <= _aligned(last["bar_ts_utc"])]
+        if from_ts:
+            visible = visible[visible.index >= _aligned(from_ts)]
+        if to_ts:
+            visible = visible[visible.index <= _aligned(to_ts)]
+        if limit > 0 and len(visible) > limit:
+            visible = visible.iloc[-limit:]
+        # Column-wise .tolist() instead of iterrows(): the latter boxes a Series per bar.
+        return [
+            {"ts_utc": ts.isoformat(), "open": o, "high": h, "low": lo, "close": c}
+            for ts, o, h, lo, c in zip(
+                visible.index,
+                visible["open"].astype(float).tolist(),
+                visible["high"].astype(float).tolist(),
+                visible["low"].astype(float).tolist(),
+                visible["close"].astype(float).tolist(),
+                strict=True,
+            )
+        ]
+
+    def _price_frames(self, dataset_id: str, config_version_id: int) -> dict[str, pd.DataFrame]:
+        """Small per-(dataset, config-version) LRU cache: bundle loading regenerates/reads
+        the whole dataset, far too slow to do per chart poll. Invalidated by
+        `_invalidate_bars_cache` whenever a dataset's underlying bars can have changed."""
+        key = (dataset_id, config_version_id)
+        cached = self._bars_cache.get(key)
+        if cached is not None:
+            self._bars_cache.move_to_end(key)  # LRU: don't evict the frame in active use
+            return cached
+        cfg = BotConfig.model_validate_json(
+            self._config_version_row(config_version_id)["config_json"]
+        )
+        bundle = load_bundle_for_dataset(self.conn, dataset_id, cfg)
+        while len(self._bars_cache) >= _BARS_CACHE_MAX:
+            self._bars_cache.popitem(last=False)
+        self._bars_cache[key] = bundle.price
+        return bundle.price
+
+    def _invalidate_bars_cache(self, dataset_id: str | None = None) -> None:
+        """Drop cached frames for one dataset (or all). Must be called whenever the bars
+        behind a dataset id can have changed, or the chart serves pre-import prices."""
+        if dataset_id is None:
+            self._bars_cache.clear()
+            return
+        for key in [k for k in self._bars_cache if k[0] == dataset_id]:
+            del self._bars_cache[key]
 
     # ----------------------------------------------------------------- symbols
     def list_symbols(self) -> list[dict[str, str]]:

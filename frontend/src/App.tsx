@@ -4,6 +4,8 @@ import { ConfigPage } from './pages/ConfigPage'
 import { Dashboard } from './pages/Dashboard'
 import { DatasetsPage } from './pages/DatasetsPage'
 import { DecisionsPage } from './pages/DecisionsPage'
+import { RunReportPage } from './pages/RunReportPage'
+import { RunsPage } from './pages/RunsPage'
 import { TradesPage } from './pages/TradesPage'
 
 function App() {
@@ -26,6 +28,9 @@ function App() {
         <NavLink to="/trades" className={({ isActive }) => (isActive ? 'active' : '')}>
           Trades
         </NavLink>
+        <NavLink to="/runs" className={({ isActive }) => (isActive ? 'active' : '')}>
+          Runs
+        </NavLink>
       </nav>
       <main className="app-main">
         <Routes>
@@ -34,6 +39,8 @@ function App() {
           <Route path="/datasets" element={<DatasetsPage />} />
           <Route path="/decisions" element={<DecisionsPage />} />
           <Route path="/trades" element={<TradesPage />} />
+          <Route path="/runs" element={<RunsPage />} />
+          <Route path="/runs/:id/report" element={<RunReportPage />} />
         </Routes>
       </main>
     </div>

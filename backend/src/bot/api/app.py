@@ -5,7 +5,17 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from bot.api.routers import account, config, datasets, decisions, equity, filters, run, trades
+from bot.api.routers import (
+    account,
+    config,
+    datasets,
+    decisions,
+    equity,
+    filters,
+    run,
+    runs,
+    trades,
+)
 from bot.api.run_service import RunnerService, default_db_path
 
 
@@ -26,6 +36,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
     app.include_router(trades.router, prefix="/api", tags=["trades"])
     app.include_router(decisions.router, prefix="/api", tags=["decisions"])
     app.include_router(run.router, prefix="/api", tags=["run"])
+    app.include_router(runs.router, prefix="/api", tags=["runs"])
     app.include_router(datasets.router, prefix="/api", tags=["datasets"])
     app.include_router(equity.router, prefix="/api", tags=["equity"])
 
