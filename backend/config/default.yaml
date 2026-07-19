@@ -40,13 +40,13 @@ filters:
   adx_filter:
     enabled: true
     period: 14
-    threshold_trend: 30.0
-    threshold_range: 25.0
+    threshold_trend: 25.0                   # was 30: ADX lags trend starts; 30 starved breakouts
+    threshold_range: 23.0
   er_filter:
     enabled: true
     period: 10
-    threshold_trend: 0.6
-    threshold_range: 0.3
+    threshold_trend: 0.35                   # was 0.6: near-unreachable jointly with ADX-trend
+    threshold_range: 0.30
   atr_ref:
     enabled: true
     locked: true
@@ -59,7 +59,7 @@ filters:
     z_breakout_only: 2.0
     z_mid_low: 1.0
     sl_scale_high: 1.5
-    sl_scale_mid: 1.5
+    sl_scale_mid: 1.2                       # was 1.5 (== high, made the mid band pointless)
     sl_scale_normal: 1.0
   volume:
     enabled: false                          # off for FOREX
@@ -98,7 +98,8 @@ filters:
     loss_reduce_to: 0.3
   time_stop:
     enabled: true
-    hours: 8.0
+    bars: 16                                # timeframe-aware budget (bars x tf duration)
+    hours: 8.0                              # fallback when bars is null
     after_tp1: false                        # C5
   range_width:
     enabled: true
@@ -111,7 +112,7 @@ filters:
     one_trade_per_symbol: true               # Phase 1/2 gap default
   wick:
     enabled: true
-    min_ratio: 0.5                           # D4
+    min_ratio: 0.33                          # D4 revised (0.5 = rare pin-bar, starved trades)
   news:
     enabled: false
     blacklist_utc: []

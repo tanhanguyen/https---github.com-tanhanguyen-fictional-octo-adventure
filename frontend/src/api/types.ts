@@ -152,9 +152,18 @@ export interface SymbolOut {
 
 export interface DatasetOut {
   id: string
-  seed: number
-  n_candles_15m: number
+  kind: string
   created_at_utc: string
+  seed: number | null
+  n_candles_15m: number | null
+  symbol: string | null
+  native_tf: string | null
+  source_path: string | null
+  file_sha256: string | null
+  start_ts: string | null
+  end_ts: string | null
+  bar_count: number | null
+  gap_count: number | null
 }
 
 export interface RunOut {

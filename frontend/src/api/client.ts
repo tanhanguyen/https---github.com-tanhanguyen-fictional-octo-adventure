@@ -54,10 +54,16 @@ export const api = {
   listDatasets: () => http.get<DatasetOut[]>('/datasets').then((r) => r.data),
   createDataset: (seed: number, bars: number) =>
     http.post<DatasetOut>('/datasets', { seed, bars }).then((r) => r.data),
+  importCsv: (path: string, symbol: string, nativeTf: string) =>
+    http
+      .post<DatasetOut>('/datasets/import', { path, symbol, native_tf: nativeTf })
+      .then((r) => r.data),
 
   getRun: () => http.get<RunOut | null>('/run').then((r) => r.data),
-  createRun: (seed: number, bars: number) =>
-    http.post<RunOut>('/run', { seed, bars }).then((r) => r.data),
+  createRun: (seed: number, bars: number, datasetId?: string) =>
+    http
+      .post<RunOut>('/run', { seed, bars, dataset_id: datasetId ?? null })
+      .then((r) => r.data),
   step: () => http.post<RunStepOut>('/run/step').then((r) => r.data),
   play: (intervalMs = 200) =>
     http.post<RunOut>('/run/play', { interval_ms: intervalMs }).then((r) => r.data),

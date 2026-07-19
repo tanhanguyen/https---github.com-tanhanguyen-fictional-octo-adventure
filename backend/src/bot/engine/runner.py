@@ -60,7 +60,18 @@ class Runner:
         self.config = config
         self.instrument = instrument
         self.clock = clock
-        self.order_engine = OrderEngine(instrument, config.risk.intrabar_priority)
+        self.order_engine = OrderEngine(
+            instrument, config.risk.intrabar_priority, costs=config.execution.costs
+        )
+        # Time stop budget: bars x timeframe duration when `bars` is set (timeframe-aware),
+        # else the legacy fixed `hours`.
+        ts_cfg = config.filters.time_stop
+        if ts_cfg.bars is not None:
+            self.time_stop_hours = (
+                ts_cfg.bars * tf_duration(config.timeframe).total_seconds() / 3600.0
+            )
+        else:
+            self.time_stop_hours = ts_cfg.hours
 
         self.trade: OpenTrade | None = None
         self.trade_db_id: int | None = None
@@ -86,7 +97,7 @@ class Runner:
         outcome = self.order_engine.process_bar(
             self.trade,
             bar,
-            self.config.filters.time_stop.hours,
+            self.time_stop_hours,
             self.config.filters.time_stop.enabled,
             self.config.filters.time_stop.after_tp1,
             equity=self.equity,

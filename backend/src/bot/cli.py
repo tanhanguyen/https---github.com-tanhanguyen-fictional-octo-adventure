@@ -10,18 +10,33 @@ import json
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from bot.config.loader import load_default_config, load_instruments
 from bot.config.models import BotConfig
 from bot.core.clock import Clock
+from bot.core.errors import ConfigError
+from bot.core.timeframes import tf_rank
 from bot.core.types import InstrumentSpec
-from bot.data.dataset import DatasetSpec, generate_bundle
+from bot.data.dataset import (
+    DatasetSpec,
+    generate_bundle,
+    import_csv_dataset,
+    load_bundle_for_dataset,
+)
 from bot.data.feed import Feed
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
 from bot.engine.runner import Runner
 from bot.filters.registry import ALL_FILTER_IDS
+
+
+def _default_db_path() -> str:
+    # src/bot/cli.py -> parents[2] == backend/
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir / "runtime.db")
 
 
 def _build_instrument(config: BotConfig, instruments_yaml: dict[str, Any]) -> InstrumentSpec:
@@ -52,7 +67,7 @@ def _run(
     config: BotConfig,
     instrument: InstrumentSpec,
     price_feed: Feed,
-    dxy_feed: Feed,
+    dxy_feed: Feed | None,
     bars: int,
 ) -> _RunResult:
     conn = connect_and_migrate(":memory:")
@@ -121,6 +136,52 @@ def cmd_replay(seed: int, bars: int) -> int:
     return 0
 
 
+def cmd_import_csv(path: str, symbol: str, native_tf: str) -> int:
+    conn = connect_and_migrate(_default_db_path())
+    try:
+        result = import_csv_dataset(conn, Path(path), symbol, native_tf)
+    finally:
+        conn.close()
+    print(f"dataset_id: {result.dataset_id}")
+    print(f"kind: {result.kind}")
+    print(f"symbol: {result.symbol}  native_tf: {result.native_tf}")
+    print(f"bars: {result.bar_count}  gaps: {result.gap_count}")
+    print(f"range: {result.start_ts} -> {result.end_ts}")
+    return 0
+
+
+def cmd_replay_dataset(dataset_id: str, bars: int) -> int:
+    config = load_default_config()
+    instrument = _build_instrument(config, load_instruments())
+
+    store_conn = connect_and_migrate(_default_db_path())
+    try:
+        row = repo.get_dataset(store_conn, dataset_id)
+        if row is None:
+            raise ConfigError(f"unknown dataset id {dataset_id!r}")
+        if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(config.timeframe):
+            raise ConfigError(
+                f"dataset native_tf {row['native_tf']!r} is coarser than "
+                f"config.timeframe {config.timeframe!r} -- pick a finer-or-equal timeframe"
+            )
+        bundle = load_bundle_for_dataset(store_conn, dataset_id, config)
+    finally:
+        store_conn.close()
+
+    price_feed = Feed(frames=bundle.price)
+    dxy_feed = Feed(frames=bundle.dxy) if bundle.dxy is not None else None
+
+    result = _run(f"replay-dataset-{dataset_id}", config, instrument, price_feed, dxy_feed, bars)
+
+    print(f"bars processed: {len(result.stream)}")
+    print(f"reason histogram: {dict(result.reason_histogram)}")
+    print(f"result histogram: {dict(result.result_histogram)}")
+    print(f"final equity: {result.final_equity:.2f}")
+    print(f"decision_stream_hash: {result.decision_hash}")
+    print(f"final_equity_repr: {result.final_equity!r}")
+    return 0
+
+
 # Filters that never toggle (locked, or DERIVED/structural) -- excluded from the A/B sweep.
 _AB_EXCLUDED_FILTERS = {"atr_ref"}
 
@@ -137,6 +198,10 @@ _AB_MAY_BE_INERT = {
     "wick",
     "account_risk",
     "time_stop",
+    # Since 2026-07-19 confirmation_lag no longer applies to BREAKOUT signals (retest
+    # embeds its own confirmation, docs/decisions.md) -- it only gates MEAN_REVERSION,
+    # which is itself rare on synthetic data (3-condition AND).
+    "confirmation_lag",
     # Breakout signals are inherently trend-following, so their direction structurally
     # tends to already agree with the HTF trend -- an mtf conflict is rare on synthetic
     # data (same class of rarity as MR's 3-condition AND, see docs/decisions.md).
@@ -187,19 +252,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    replay = sub.add_parser("replay", help="Run the bot over synthetic mock data")
+    replay = sub.add_parser("replay", help="Run the bot over synthetic mock data or a dataset")
     replay.add_argument("--seed", type=int, default=42)
     replay.add_argument("--bars", type=int, default=5000)
+    replay.add_argument(
+        "--dataset", type=str, default=None, help="Run against an imported dataset id"
+    )
 
     ab = sub.add_parser("ab", help="A/B each filter (baseline vs toggled) against a baseline")
     ab.add_argument("--seed", type=int, default=42)
     ab.add_argument("--bars", type=int, default=5000)
 
+    import_csv = sub.add_parser("import-csv", help="Register a real OHLCV CSV as a dataset")
+    import_csv.add_argument("--path", type=str, required=True)
+    import_csv.add_argument("--symbol", type=str, required=True)
+    import_csv.add_argument(
+        "--native-tf", type=str, default="15m", choices=["15m", "1H", "4H", "1D"]
+    )
+
     args = parser.parse_args(argv)
     if args.command == "replay":
+        if args.dataset is not None:
+            return cmd_replay_dataset(args.dataset, args.bars)
         return cmd_replay(args.seed, args.bars)
     if args.command == "ab":
         return cmd_ab(args.seed, args.bars)
+    if args.command == "import-csv":
+        return cmd_import_csv(args.path, args.symbol, args.native_tf)
     return 1
 
 

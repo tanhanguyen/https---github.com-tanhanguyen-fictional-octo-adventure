@@ -101,7 +101,8 @@ def test_adx_filter_boundary_trend_strict(base_ctx):
     cfg2 = base_ctx.config.model_copy(deep=True)
     base_ctx = replace(base_ctx, config=cfg2)
     adx_series = base_ctx.adx.copy()
-    adx_series.iloc[-1] = 30.0  # exactly threshold_trend -> NOT > -> not "trend"
+    # exactly threshold_trend -> NOT > -> not "trend"
+    adx_series.iloc[-1] = cfg2.filters.adx_filter.threshold_trend
     ctx = replace(base_ctx, adx=adx_series)
     r = adx_filter.evaluate(ctx)
     assert r.values["regime"] != "trend"
@@ -114,7 +115,8 @@ def test_adx_filter_disabled(base_ctx):
 
 def test_er_filter_boundary(base_ctx):
     er_series = base_ctx.er.copy()
-    er_series.iloc[-1] = 0.3  # exactly threshold_range -> NOT < -> not "range"
+    # exactly threshold_range -> NOT < -> not "range"
+    er_series.iloc[-1] = base_ctx.config.filters.er_filter.threshold_range
     ctx = replace(base_ctx, er=er_series)
     r = er_filter.evaluate(ctx)
     assert r.values["regime"] != "range"
@@ -174,6 +176,34 @@ def test_volume_pass_and_fail(base_ctx):
     ctx = replace(ctx, volume=vol)
     r = volume.evaluate(ctx)
     assert not r.passed and r.blocking
+
+
+def test_volume_gate_on_real_varied_crypto_volume(base_ctx):
+    """Plan 02: no CRYPTO-specific code path exists in the filter -- flipping
+    enabled=True + symbol_type=CRYPTO must gate correctly on real (non-constant)
+    volume/volume_ma computed via the normal sma indicator, same as any symbol."""
+    from bot.indicators.sma import sma
+
+    cfg2 = base_ctx.config.model_copy(deep=True)
+    cfg2.filters.volume.enabled = True
+    cfg2.symbol_type = "CRYPTO"
+    signal = Signal(
+        direction=Direction.BUY, strategy=StrategyName.BREAKOUT, signal_bar_ts=base_ctx.now
+    )
+
+    real_volume = pd.Series([100.0, 120.0, 90.0, 200.0, 80.0, 150.0, 5000.0])
+    volume_ma = sma(real_volume, period=5)
+
+    ctx = replace(base_ctx, config=cfg2, signal=signal, volume=real_volume, volume_ma=volume_ma)
+    r = volume.evaluate(ctx)
+    assert r.evaluated
+    assert r.passed  # last bar (5000) is far above its trailing MA*1.5 -> gate opens
+
+    real_volume_2 = real_volume.copy()
+    real_volume_2.iloc[-1] = 50.0  # below MA*1.5 -> gate blocks
+    ctx2 = replace(ctx, volume=real_volume_2)
+    r2 = volume.evaluate(ctx2)
+    assert not r2.passed and r2.blocking
 
 
 def test_session_in_and_out(base_ctx):
@@ -239,7 +269,7 @@ def test_confirmation_lag_pass_fail(base_ctx):
     close = base_ctx.close.copy()
     close.iloc[-1] = close.iloc[-2] + 1.0  # confirms BUY
     signal = Signal(
-        direction=Direction.BUY, strategy=StrategyName.BREAKOUT, signal_bar_ts=base_ctx.now
+        direction=Direction.BUY, strategy=StrategyName.MEAN_REVERSION, signal_bar_ts=base_ctx.now
     )
     ctx = replace(base_ctx, close=close, signal=signal)
     r = confirmation_lag.evaluate(ctx)
@@ -249,6 +279,19 @@ def test_confirmation_lag_pass_fail(base_ctx):
     ctx = replace(ctx, close=close)
     r = confirmation_lag.evaluate(ctx)
     assert not r.passed and r.blocking
+
+
+def test_confirmation_lag_not_applicable_breakout(base_ctx):
+    """Breakout retest embeds its own confirmation (close beyond the level); the
+    close[-1] > close[-2] check would reject the classic pullback retest shape."""
+    close = base_ctx.close.copy()
+    close.iloc[-1] = close.iloc[-2] - 1.0  # would fail for MR
+    signal = Signal(
+        direction=Direction.BUY, strategy=StrategyName.BREAKOUT, signal_bar_ts=base_ctx.now
+    )
+    ctx = replace(base_ctx, close=close, signal=signal)
+    r = confirmation_lag.evaluate(ctx)
+    assert r.passed and not r.blocking
 
 
 def test_equity_curve_win_streak_reduces_risk(base_ctx):

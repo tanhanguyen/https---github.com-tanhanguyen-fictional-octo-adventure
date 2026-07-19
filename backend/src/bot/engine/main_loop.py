@@ -9,7 +9,7 @@ entry, see docs/decisions.md).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from bot.config.models import BotConfig
 from bot.core.types import FilterResult, OrderStatus, StrategyName
@@ -76,9 +76,22 @@ def decide(
         strategy_candidate = StrategyName.MEAN_REVERSION
     regime_undecided = strategy_candidate is None
 
-    # Breakout-retest state machine runs EVERY bar regardless of regime (plan requirement).
+    # Breakout-retest state machine runs EVERY bar (plan requirement: a pending retest
+    # survives regime flickers). Regime gating happens at ARM time instead: a new
+    # breakout is only armed when the CURRENT bar's regime selects BREAKOUT and the
+    # breakout direction agrees with the trend mode (BULL->BUY, BEAR->SELL). This also
+    # closes the hole where breakout signals fired (and traded) inside a range regime.
+    arm_buy = strategy_candidate == StrategyName.BREAKOUT and mode == "BULL"
+    arm_sell = strategy_candidate == StrategyName.BREAKOUT and mode == "BEAR"
+    rw_cfg = config.filters.range_width
     breakout_signal, new_breakout_state = breakout_retest.evaluate(
-        ctx, breakout_state, config.strategies.breakout, config.risk
+        ctx,
+        breakout_state,
+        config.strategies.breakout,
+        config.risk,
+        arm_buy=arm_buy,
+        arm_sell=arm_sell,
+        min_range_atr_mult=rw_cfg.atr_mult if rw_cfg.enabled else None,
     )
 
     mr_signal = None
@@ -98,6 +111,17 @@ def decide(
 
     outcome = resolve_decision(all_results, signal, strategy_candidate, regime_undecided)
 
+    # A retest that fired but was vetoed downstream (wick/mtf/session/account_risk...)
+    # must not burn the pending breakout: keep waiting for a better retest bar within
+    # the same RETEST_MAX_BARS budget instead of silently resetting the state machine.
+    if (
+        breakout_signal is not None
+        and outcome.reason != "done"
+        and breakout_state.status == "AWAITING_RETEST"
+        and breakout_state.bars_waited + 1 <= config.risk.retest_max_bars
+    ):
+        new_breakout_state = replace(breakout_state, bars_waited=breakout_state.bars_waited + 1)
+
     open_trade: OpenTrade | None = None
     if outcome.reason == "done":
         assert signal is not None
@@ -106,7 +130,13 @@ def decide(
             assert signal.range_high is not None and signal.range_low is not None
             atr14 = float(ctx.atr14.iloc[-1])
             sl = breakout_retest.compute_sl(
-                signal.direction, signal.range_high, signal.range_low, atr14, sl_scale
+                signal.direction,
+                signal.range_high,
+                signal.range_low,
+                retest_high=float(ctx.high.iloc[-1]),
+                retest_low=float(ctx.low.iloc[-1]),
+                atr14=atr14,
+                sl_scale=sl_scale,
             )
             tp_rules = breakout_retest.compute_tp_rules(config.strategies.breakout)
         else:

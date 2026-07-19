@@ -86,10 +86,25 @@ def resample_trading_week(
 
 
 def build_all_timeframes(
-    df15: pd.DataFrame, rollover_tz: str = "America/New_York", rollover_time: str = "17:00"
+    df_base: pd.DataFrame,
+    rollover_tz: str = "America/New_York",
+    rollover_time: str = "17:00",
+    base_tf: str = "15m",
 ) -> dict[str, pd.DataFrame]:
-    df1h = resample_fixed(df15, "1h")
-    df4h = resample_fixed(df1h, "4h")
-    df1d = resample_trading_day(df1h, rollover_tz, rollover_time)
-    df1w = resample_trading_week(df1d, rollover_tz, rollover_time)
-    return {"15m": df15, "1H": df1h, "4H": df4h, "1D": df1d, "1W": df1w}
+    """Resample UPWARD only from `base_tf` (plan 02: real CSV data may already start
+    at 1H/4H/1D — e.g. VN derivatives have no 15m — so lower frames simply don't
+    exist then). `base_tf="15m"` (the default) reproduces the original synthetic
+    pipeline byte-for-byte, so every existing positional call site is unaffected."""
+    frames: dict[str, pd.DataFrame] = {base_tf: df_base}
+    if base_tf == "15m":
+        frames["1H"] = resample_fixed(df_base, "1h")
+        frames["4H"] = resample_fixed(frames["1H"], "4h")
+        frames["1D"] = resample_trading_day(frames["1H"], rollover_tz, rollover_time)
+    elif base_tf == "1H":
+        frames["4H"] = resample_fixed(df_base, "4h")
+        frames["1D"] = resample_trading_day(df_base, rollover_tz, rollover_time)
+    elif base_tf == "4H":
+        frames["1D"] = resample_trading_day(df_base, rollover_tz, rollover_time)
+    if "1D" in frames:
+        frames["1W"] = resample_trading_week(frames["1D"], rollover_tz, rollover_time)
+    return frames

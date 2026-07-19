@@ -23,8 +23,14 @@ from bot.config.metadata import metadata_by_field
 from bot.config.models import BotConfig
 from bot.core.clock import Clock
 from bot.core.errors import ConfigError
+from bot.core.timeframes import tf_rank
 from bot.core.types import InstrumentSpec
-from bot.data.dataset import DatasetSpec, generate_bundle
+from bot.data.dataset import (
+    CsvImportResult,
+    DatasetSpec,
+    import_csv_dataset,
+    load_bundle_for_dataset,
+)
 from bot.data.dataset import dataset_id as compute_dataset_id
 from bot.data.feed import Feed
 from bot.db import repositories as repo
@@ -195,23 +201,47 @@ class RunnerService:
         cur = self.conn.execute("SELECT * FROM dataset ORDER BY created_at_utc DESC")
         out: list[dict[str, Any]] = []
         for row in cur.fetchall():
-            spec = json.loads(row["spec_json"])
-            out.append(
-                {
-                    "id": row["id"],
-                    "seed": spec["seed"],
-                    "n_candles_15m": spec["n_candles_15m"],
-                    "created_at_utc": row["created_at_utc"],
-                }
-            )
+            kind = row["kind"] if row["kind"] else "synthetic"
+            if kind == "synthetic":
+                spec = json.loads(row["spec_json"])
+                out.append(
+                    {
+                        "id": row["id"],
+                        "kind": kind,
+                        "seed": spec["seed"],
+                        "n_candles_15m": spec["n_candles_15m"],
+                        "created_at_utc": row["created_at_utc"],
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "id": row["id"],
+                        "kind": kind,
+                        "symbol": row["symbol"],
+                        "native_tf": row["native_tf"],
+                        "source_path": row["source_path"],
+                        "file_sha256": row["file_sha256"],
+                        "start_ts": row["start_ts"],
+                        "end_ts": row["end_ts"],
+                        "bar_count": row["bar_count"],
+                        "gap_count": row["gap_count"],
+                        "created_at_utc": row["created_at_utc"],
+                    }
+                )
         return out
 
-    def _load_dataset_spec(self, dataset_id: str) -> DatasetSpec:
-        cur = self.conn.execute("SELECT spec_json FROM dataset WHERE id=?", (dataset_id,))
-        row = cur.fetchone()
-        if row is None:
-            raise KeyError(dataset_id)
-        return DatasetSpec(**json.loads(row["spec_json"]))
+    @_locked
+    def import_csv(self, path: str, symbol: str, native_tf: str) -> CsvImportResult:
+        _, cfg = self.get_active_config()
+        return import_csv_dataset(
+            self.conn,
+            Path(path),
+            symbol,
+            native_tf,
+            cfg.trading_day_rollover_tz,
+            cfg.trading_day_rollover_time,
+        )
 
     # ------------------------------------------------------------- run/step
     def _build_instrument(self, cfg: BotConfig) -> InstrumentSpec:
@@ -241,11 +271,19 @@ class RunnerService:
                     seed, bars, cfg.symbol, cfg.trading_day_rollover_tz,
                     cfg.trading_day_rollover_time,
                 )
-            spec = self._load_dataset_spec(dataset_id)
 
-            bundle = generate_bundle(spec)
-            price_feed = Feed(frames=bundle["price"])
-            dxy_feed = Feed(frames=bundle["dxy"])
+            row = repo.get_dataset(self.conn, dataset_id)
+            if row is None:
+                raise KeyError(dataset_id)
+            if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(cfg.timeframe):
+                raise ConfigError(
+                    f"dataset native_tf {row['native_tf']!r} is coarser than "
+                    f"config.timeframe {cfg.timeframe!r} -- pick a finer-or-equal timeframe"
+                )
+
+            bundle = load_bundle_for_dataset(self.conn, dataset_id, cfg)
+            price_feed = Feed(frames=bundle.price)
+            dxy_feed = Feed(frames=bundle.dxy) if bundle.dxy is not None else None
 
             run_db_id = repo.create_run(
                 self.conn, dataset_id, int(cfg_row["id"]), cfg.symbol, cfg.starting_equity

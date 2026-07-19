@@ -78,14 +78,44 @@ def test_breakout_retest_fires_buy_signal():
 
 def test_breakout_sl_mirror_formula():
     atr14, sl_scale = 0.0010, 1.5
+    # BUY anchors at min(retest_low, range_high): retest bar dipped below the level.
     sl_buy = breakout_retest.compute_sl(
-        Direction.BUY, range_high=1.1050, range_low=1.1000, atr14=atr14, sl_scale=sl_scale
+        Direction.BUY,
+        range_high=1.1050,
+        range_low=1.1000,
+        retest_high=1.1065,
+        retest_low=1.1045,
+        atr14=atr14,
+        sl_scale=sl_scale,
     )
-    assert sl_buy == pytest.approx(1.1000 - 0.5 * atr14 * sl_scale)
+    assert sl_buy == pytest.approx(1.1045 - 0.5 * atr14 * sl_scale)
+    # SELL anchors at max(retest_high, range_low).
     sl_sell = breakout_retest.compute_sl(
-        Direction.SELL, range_high=1.1050, range_low=1.1000, atr14=atr14, sl_scale=sl_scale
+        Direction.SELL,
+        range_high=1.1050,
+        range_low=1.1000,
+        retest_high=1.1008,
+        retest_low=1.0990,
+        atr14=atr14,
+        sl_scale=sl_scale,
     )
-    assert sl_sell == pytest.approx(1.1050 + 0.5 * atr14 * sl_scale)
+    assert sl_sell == pytest.approx(1.1008 + 0.5 * atr14 * sl_scale)
+
+
+def test_breakout_sl_capped_at_broken_level():
+    """The anchor never sits beyond the broken level: a shallow retest that only
+    touched the tolerance zone above range_high still gets its SL below the level."""
+    atr14, sl_scale = 0.0010, 1.0
+    sl_buy = breakout_retest.compute_sl(
+        Direction.BUY,
+        range_high=1.1050,
+        range_low=1.1000,
+        retest_high=1.1070,
+        retest_low=1.1055,  # stayed above the level
+        atr14=atr14,
+        sl_scale=sl_scale,
+    )
+    assert sl_buy == pytest.approx(1.1050 - 0.5 * atr14 * sl_scale)
 
 
 def test_mean_reversion_fires_buy_on_oversold_bounce():

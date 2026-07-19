@@ -61,9 +61,52 @@ def activate_config_version(conn: sqlite3.Connection, config_version_id: int) ->
 
 def upsert_dataset(conn: sqlite3.Connection, dataset_id: str, spec_json: str) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO dataset(id, spec_json, created_at_utc) "
-        "VALUES (?, ?, datetime('now'))",
+        "INSERT OR IGNORE INTO dataset(id, spec_json, created_at_utc, kind) "
+        "VALUES (?, ?, datetime('now'), 'synthetic')",
         (dataset_id, spec_json),
+    )
+    conn.commit()
+
+
+def get_dataset(conn: sqlite3.Connection, dataset_id: str) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM dataset WHERE id = ?", (dataset_id,))
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def find_dataset_by_sha256(conn: sqlite3.Connection, file_sha256: str) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM dataset WHERE file_sha256 = ?", (file_sha256,))
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def register_csv_dataset(
+    conn: sqlite3.Connection,
+    dataset_id: str,
+    source_path: str,
+    file_sha256: str,
+    symbol: str,
+    native_tf: str,
+    start_ts: str,
+    end_ts: str,
+    bar_count: int,
+    gap_count: int,
+) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO dataset(id, spec_json, created_at_utc, kind, source_path, "
+        "file_sha256, symbol, native_tf, start_ts, end_ts, bar_count, gap_count) "
+        "VALUES (?, '{}', datetime('now'), 'csv', ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            dataset_id,
+            source_path,
+            file_sha256,
+            symbol,
+            native_tf,
+            start_ts,
+            end_ts,
+            bar_count,
+            gap_count,
+        ),
     )
     conn.commit()
 

@@ -1,8 +1,10 @@
 """Strategy 1 — Breakout-Retest (§4). D5: ATR-based retest tolerance. C6: RETEST_MAX_BARS=5.
 
-The state machine evaluates EVERY bar regardless of regime (plan requirement) because it
-carries state across bars: a regime flicker for one bar must not silently drop a pending
-retest. SL/TP formulas: docs/decisions.md mirror table (BUY/SELL)."""
+The state machine evaluates EVERY bar (plan requirement) because it carries state across
+bars: a regime flicker for one bar must not silently drop a pending retest. Regime and
+range-width gating therefore happen at ARM time (the breakout bar), via arm_buy/arm_sell
+and min_range_atr_mult — once armed, the pending retest survives regime flickers.
+SL/TP formulas: docs/decisions.md mirror table (BUY/SELL)."""
 
 from __future__ import annotations
 
@@ -28,6 +30,9 @@ def evaluate(
     state: BreakoutState,
     breakout_cfg: BreakoutConfig,
     risk_cfg: RiskConfig,
+    arm_buy: bool = True,
+    arm_sell: bool = True,
+    min_range_atr_mult: float | None = None,
 ) -> tuple[Signal | None, BreakoutState]:
     period = breakout_cfg.range_period
     if len(ctx.high) < period + 1:
@@ -83,7 +88,14 @@ def evaluate(
     if math.isnan(range_high) or math.isnan(range_low):
         return None, state
 
-    if close > range_high:
+    # Arm-time quality gate: the pre-breakout range must be meaningfully wide
+    # (range_width filter, checked here at the breakout bar — not at retest time).
+    if min_range_atr_mult is not None:
+        atr14 = float(ctx.atr14.iloc[-1])
+        if math.isnan(atr14) or (range_high - range_low) <= min_range_atr_mult * atr14:
+            return None, state
+
+    if close > range_high and arm_buy:
         return None, BreakoutState(
             status="AWAITING_RETEST",
             direction=Direction.BUY,
@@ -92,7 +104,7 @@ def evaluate(
             breakout_bar_ts=ctx.now,
             bars_waited=0,
         )
-    if close < range_low:
+    if close < range_low and arm_sell:
         return None, BreakoutState(
             status="AWAITING_RETEST",
             direction=Direction.SELL,
@@ -105,13 +117,24 @@ def evaluate(
 
 
 def compute_sl(
-    direction: Direction, range_high: float, range_low: float, atr14: float, sl_scale: float
+    direction: Direction,
+    range_high: float,
+    range_low: float,
+    retest_high: float,
+    retest_low: float,
+    atr14: float,
+    sl_scale: float,
 ) -> float:
-    """Mirror table (docs/decisions.md): BUY sl = range_low - 0.5*ATR14*sl_scale;
-    SELL sl = range_high + 0.5*ATR14*sl_scale."""
+    """Mirror table (docs/decisions.md, revised): SL anchors at the retest bar's extreme,
+    capped at the broken level — NOT at the far side of the whole range (which made
+    1R ≈ full range width and pushed TP1=1.5R out of reach of the time stop).
+
+    BUY  sl = min(retest_low,  range_high) - 0.5*ATR14*sl_scale
+    SELL sl = max(retest_high, range_low)  + 0.5*ATR14*sl_scale
+    """
     if direction == Direction.BUY:
-        return range_low - 0.5 * atr14 * sl_scale
-    return range_high + 0.5 * atr14 * sl_scale
+        return min(retest_low, range_high) - 0.5 * atr14 * sl_scale
+    return max(retest_high, range_low) + 0.5 * atr14 * sl_scale
 
 
 def compute_tp_rules(breakout_cfg: BreakoutConfig) -> TPRules:

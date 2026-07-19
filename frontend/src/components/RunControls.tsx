@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import type { RunOut } from '../api/types'
+import { usePolling } from '../hooks/usePolling'
 
 interface Props {
   run: RunOut | null
@@ -10,8 +11,10 @@ interface Props {
 export function RunControls({ run, onChanged }: Props) {
   const [seed, setSeed] = useState(42)
   const [bars, setBars] = useState(2000)
+  const [datasetId, setDatasetId] = useState('')
   const [busy, setBusy] = useState(false)
   const [lastReason, setLastReason] = useState<string | null>(null)
+  const { data: datasets } = usePolling(() => api.listDatasets(), 1000, false)
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
@@ -27,9 +30,21 @@ export function RunControls({ run, onChanged }: Props) {
       <h2>Điều khiển chạy bot</h2>
       <div className="toolbar">
         <label>
+          Dataset{' '}
+          <select value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
+            <option value="">(synthetic seed/bars)</option>
+            {(datasets ?? []).map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.kind === 'csv' ? `${d.symbol} ${d.native_tf} (${d.id})` : `synthetic (${d.id})`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           Seed{' '}
           <input
             type="number"
+            disabled={Boolean(datasetId)}
             value={seed}
             onChange={(e) => setSeed(Number(e.target.value))}
           />
@@ -47,7 +62,7 @@ export function RunControls({ run, onChanged }: Props) {
           disabled={busy}
           onClick={() =>
             withBusy(async () => {
-              await api.createRun(seed, bars)
+              await api.createRun(seed, bars, datasetId || undefined)
               onChanged()
             })
           }

@@ -50,6 +50,28 @@ cd backend
 
 In ra: số lệnh mỗi chiến lược, histogram lý do (`wait` / `no_signal` / `off` / `max_concurrent_trades_reached` / `done` …), histogram kết quả (WIN/LOSS), equity cuối, và `decision_stream_hash`. Chạy lần hai cùng seed phải ra **hash giống hệt**.
 
+Chạy trên dữ liệu thật thay vì synthetic: import CSV một lần (idempotent theo nội dung file),
+rồi replay bằng `--dataset` thay cho `--seed/--bars`:
+
+```bash
+./.venv/bin/python -m bot.cli import-csv --path data/csv/eurusd_15m.csv --symbol EURUSD --native-tf 15m
+./.venv/bin/python -m bot.cli replay --dataset <dataset_id in ra ở trên>
+```
+
+`--native-tf` là khung gốc của file CSV (`15m|1H|4H|1D` — VD phái sinh VN thường chỉ có H4/D1,
+không có 15m). Ràng buộc: `native_tf` phải mịn hơn hoặc bằng `config.timeframe` đang active,
+sai thì lệnh báo lỗi rõ ràng thay vì chạy ra kết quả rác.
+
+Nếu file gốc không đúng chuẩn `open_ts,open,high,low,close,volume`, dùng `scripts/convert_csv.py`
+để chuyển đổi trước (Binance klines export, MetaTrader/Dukascopy tab-CSV không header, hoặc
+JSON dạng TradingView/vnstock `{t,o,h,l,c,v}`):
+
+```bash
+./.venv/bin/python -m scripts.convert_csv binance --glob "data/examples/crypto/BTCUSDT-1h-*.csv" --out data/csv/BTCUSDT_1h.csv
+./.venv/bin/python -m scripts.convert_csv mt --path "data/examples/forex/EURUSD15.csv" --out data/csv/EURUSD_real_15m.csv
+./.venv/bin/python -m scripts.convert_csv vnstock --glob "data/examples/phai sinh vnstock/*VN30F1M*.json" --out data/csv/VN30F1M_1D.csv
+```
+
 ### Cách B — REST API (backend chạy độc lập)
 
 ```bash
@@ -96,12 +118,36 @@ cd backend && ./.venv/bin/uvicorn bot.api.app:app --reload --port 8000
 cd frontend && npm run dev
 ```
 
-Mở <http://localhost:5173>. Bốn trang:
+Mở <http://localhost:5173>. Năm trang:
 
 - **Dashboard** — AccountPanel, RiskGauge, RunControls (Step/Play/Pause/Reset), EquityChart, bảng lệnh đang mở
 - **Config** — form filter render **hoàn toàn từ** `/api/config/schema` (thêm filter mới không cần sửa frontend); toggle từng filter + chỉnh params
+- **Datasets** — quản lý dataset: tạo synthetic (seed/bars) hoặc import CSV thật
 - **Decisions** — bảng log + chi tiết từng quyết định (đủ 16 dòng filter, tô đậm dòng đang chặn)
 - **Trades** — lịch sử lệnh + trade events + liên kết ngược về decision
+
+⚠️ Frontend gọi API qua Vite proxy (`/api` → `localhost:8000`). Nếu thấy **502 Bad Gateway**
+(vd `GET /api/datasets`) nghĩa là backend ở Terminal 1 **chưa chạy hoặc đã crash** — proxy
+không nối được cổng 8000. Kiểm tra log ở Terminal 1 và `curl localhost:8000/api/health` trước.
+
+**Chạy backtest trên dữ liệu CSV thật từ dashboard:**
+
+1. Đặt file CSV chuẩn (`open_ts,open,high,low,close,volume`, UTC) dưới `backend/data/csv/`
+   (file chưa đúng chuẩn → convert bằng `scripts/convert_csv.py`, xem Cách A).
+2. Trang **Datasets** → form *Import CSV thật*: nhập đường dẫn **server-side, tương đối với
+   thư mục `backend/`** (vd `data/csv/eurusd_15m.csv` — không phải upload file từ máy),
+   symbol (vd `EURUSD`) và Native TF đúng khung gốc của file (`15m|1H|4H|1D`).
+   Import idempotent theo nội dung file: import lại cùng file → trả về cùng dataset, không tạo bản mới.
+   Bảng Datasets hiển thị metadata: khoảng thời gian, số bar, số gap, sha256 (hover cột ID).
+3. Trang **Dashboard** → *Điều khiển chạy bot* → dropdown **Dataset**: chọn dataset vừa import
+   (chọn dataset thì Seed bị bỏ qua; để `(synthetic seed/bars)` nếu muốn chạy mock như cũ)
+   → **New Run** → Step/Play như bình thường.
+4. Ràng buộc: `native_tf` của dataset phải **mịn hơn hoặc bằng** `timeframe` đang active
+   (đổi ở trang Config). VD dataset 1D không chạy được với `timeframe: 1H` — tạo run sẽ báo lỗi
+   thay vì chạy ra kết quả rác.
+5. DXY thật (tuỳ chọn): import CSV với symbol `DXY` như bước 2, rồi trỏ filter dxy vào nó qua
+   Config (`filters.dxy.dataset_id` = id dataset DXY). Không có thì filter `dxy` dùng synthetic
+   như cũ hoặc tắt đi.
 
 ---
 
@@ -126,6 +172,10 @@ Test then chốt: `test_no_lookahead` (bất biến MTF nến-đã-đóng), `tes
 4. Bật API + dashboard → Step vài lần, thấy equity/open trades/daily_loss_count đổi.
 5. Tắt một filter (vd `mtf`) qua UI → tạo config version mới, các decision sau đó hiện `mtf` với `enabled=false, evaluated=false`.
 6. A/B chứng minh filter có tác dụng: tắt `confirmation_lag`, chạy lại cùng seed → **số lệnh phải đổi**.
+7. Chi phí giao dịch có tác dụng: chạy `replay --seed 42 --bars 600` với `execution.costs`
+   mặc định (0) rồi lại với `execution.costs.spread_pips/slippage_pips/commission_per_lot > 0`
+   (patch qua `PATCH /api/config` hoặc sửa `config/default.yaml` tạm) → **equity cuối cùng
+   phải thấp hơn hoặc bằng** phiên bản không phí (`test_replay_golden_with_costs` pin sẵn).
 
 ---
 

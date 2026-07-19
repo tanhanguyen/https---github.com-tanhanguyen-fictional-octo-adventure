@@ -62,14 +62,19 @@ class TrendFilterConfig(FilterToggle):
 
 class AdxFilterConfig(FilterToggle):
     period: int = 14
-    threshold_trend: float = 30.0
-    threshold_range: float = 25.0
+    # Trend threshold 25 (was 30): breakout-retest fires at the START of a trend, when
+    # ADX (a lagging indicator) is still climbing — 30 was rarely reached inside the
+    # 5-bar retest window, starving the strategy of trades.
+    threshold_trend: float = 25.0
+    threshold_range: float = 23.0
 
 
 class ErFilterConfig(FilterToggle):
     period: int = 10
-    threshold_trend: float = 0.6
-    threshold_range: float = 0.3
+    # 0.35 (was 0.6): ER > 0.6 over 10 bars is a near-perfect straight line and almost
+    # never coincides with ADX-trend + channel alignment; the AND-gate starved trades.
+    threshold_trend: float = 0.35
+    threshold_range: float = 0.30
 
 
 class AtrRefConfig(FilterToggle):
@@ -85,7 +90,7 @@ class AtrZscoreConfig(FilterToggle):
     z_breakout_only: float = 2.0
     z_mid_low: float = 1.0
     sl_scale_high: float = 1.5
-    sl_scale_mid: float = 1.5
+    sl_scale_mid: float = 1.2  # was 1.5 == sl_scale_high, making the mid band pointless
     sl_scale_normal: float = 1.0
 
 
@@ -124,6 +129,9 @@ class MtfFilterConfig(FilterToggle):
 class DxyFilterConfig(FilterToggle):
     change_threshold_pct: float = 0.2
     lookback_hours: int = 1
+    # Plan 02: links a real DXY CSV dataset by id (kind='csv', symbol='DXY').
+    # None -> synthetic DXY bundled with the price dataset (unchanged behavior).
+    dataset_id: str | None = None
 
 
 class ConfirmationLagFilterConfig(FilterToggle):
@@ -138,7 +146,11 @@ class EquityCurveFilterConfig(FilterToggle):
 
 
 class TimeStopFilterConfig(FilterToggle):
-    hours: float = 8.0
+    # When `bars` is set it takes precedence: the effective wall-clock budget is
+    # bars x timeframe duration. A fixed hours=8 was timeframe-hostile — on 4H it
+    # closed every trade after 2 bars, on 1D after the first bar.
+    bars: int | None = 16
+    hours: float = 8.0  # fallback when bars is None
     after_tp1: bool = False  # C5: disabled after TP1
 
 
@@ -154,7 +166,7 @@ class AccountRiskFilterConfig(FilterToggle):
 
 
 class WickFilterConfig(FilterToggle):
-    min_ratio: float = 0.5
+    min_ratio: float = 0.33  # was 0.5: a half-range wick is a rare pin-bar, starved trades
 
 
 class NewsFilterConfig(FilterToggle):
@@ -218,6 +230,19 @@ SymbolTypeLiteral = Literal["FOREX", "CRYPTO", "STOCK_VN_CASH", "STOCK_VN_DERIV"
 TimeframeLiteral = Literal["15m", "1H", "4H", "1D", "1W"]
 
 
+class ExecutionCostsConfig(StrictModel):
+    """§10: applied only in order_engine.py at fill/close. All zero by default so
+    `test_replay_golden` is untouched (D6/D-costs, plans/02-real-data.md)."""
+
+    spread_pips: float = 0.0
+    commission_per_lot: float = 0.0
+    slippage_pips: float = 0.0
+
+
+class ExecutionConfig(StrictModel):
+    costs: ExecutionCostsConfig = Field(default_factory=ExecutionCostsConfig)
+
+
 class RiskConfig(StrictModel):
     max_risk_per_trade_pct: float = 1.0  # C7: base %, multiplied by risk_multiplier
     retest_tolerance_mode: Literal["atr", "percent"] = "atr"
@@ -237,6 +262,7 @@ class BotConfig(StrictModel):
     trading_day_rollover_tz: str = "America/New_York"  # C3
     trading_day_rollover_time: str = "17:00"
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     strategies: StrategiesConfig = Field(default_factory=StrategiesConfig)
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
 

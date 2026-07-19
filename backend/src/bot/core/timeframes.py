@@ -27,6 +27,13 @@ TIMEFRAME_HIERARCHY: dict[str, str | None] = {
     "1W": None,
 }
 
+# Plan 02: ordering for "native_tf must be <= config.timeframe" (finer-or-equal) checks.
+TF_ORDER: list[str] = ["15m", "1H", "4H", "1D", "1W"]
+
+
+def tf_rank(tf: str) -> int:
+    return TF_ORDER.index(tf)
+
 
 def tf_duration(tf: str) -> timedelta:
     return TF_DURATION[tf]

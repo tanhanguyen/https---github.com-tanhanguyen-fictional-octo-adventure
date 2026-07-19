@@ -1,10 +1,15 @@
 """Filter 10 — Confirmation lag (GATE, Phase B). D6/C2: fill convention never changes;
 this only decides whether the just-closed bar *confirms* the signal direction, using
-§6.1 semantics (close[-1] vs close[-2]) per docs/decisions.md deviation #14."""
+§6.1 semantics (close[-1] vs close[-2]) per docs/decisions.md deviation #14.
+
+Not applicable to BREAKOUT retest signals: the retest bar already embeds its own
+confirmation (close back beyond the broken level), and close[-1] > close[-2] would
+systematically reject the classic pullback-then-rejection retest shape (the prior
+bar's close sits higher during a BUY pullback by construction)."""
 
 from __future__ import annotations
 
-from bot.core.types import Direction, FilterKind, FilterResult
+from bot.core.types import Direction, FilterKind, FilterResult, StrategyName
 from bot.filters.base import FilterContext, disabled_result, is_nan, warmup_result
 
 FILTER_ID = "confirmation_lag"
@@ -25,6 +30,18 @@ def evaluate(ctx: FilterContext) -> FilterResult:
             blocking=False,
             values={},
             detail="no signal yet",
+        )
+
+    if ctx.signal.strategy == StrategyName.BREAKOUT:
+        return FilterResult(
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=True,
+            blocking=False,
+            values={},
+            detail="not applicable (breakout retest embeds its own confirmation)",
         )
 
     if len(ctx.close) < 2:

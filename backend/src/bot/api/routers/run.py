@@ -26,7 +26,7 @@ def create_run(
     body: RunCreateIn | None = None, service: RunnerService = Depends(get_runner_service)
 ) -> RunOut:
     body = body or RunCreateIn()
-    info = service.create_run(seed=body.seed, bars=body.bars)
+    info = service.create_run(seed=body.seed, bars=body.bars, dataset_id=body.dataset_id)
     return _run_out(info)
 
 

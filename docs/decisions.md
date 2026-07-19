@@ -54,7 +54,7 @@ Cả ADX lẫn ER disabled → điều kiện regime mặc định đúng → nh
 
 | | BUY | SELL |
 |---|---|---|
-| Breakout SL | `range_low − 0.5×ATR14×sl_scale` | `range_high + 0.5×ATR14×sl_scale` |
+| Breakout SL | `min(retest_low, range_high) − 0.5×ATR14×sl_scale` | `max(retest_high, range_low) + 0.5×ATR14×sl_scale` *(sửa 2026-07-19, xem mục cuối — trước đây neo `range_low`/`range_high` phía xa)* |
 | Breakout TP | `entry + 1.5×\|entry−sl\|` (TP1), `+3.0×` (TP2) | `entry − 1.5×\|entry−sl\|`, `−3.0×` |
 | MR SL | `ema34_low[-1] − 1.0×ATR5[-1]` | `ema34_high[-1] + 1.0×ATR5[-1]` |
 | MR TP | `ema34_close[-1]` (tuyệt đối, chốt lúc quyết định) | như BUY |
@@ -164,7 +164,75 @@ kê ở trên.
   định), `dxy`, `volume` (off cho FOREX), `atr_zscore`, `equity_curve`, `range_width`, `wick`,
   `account_risk`, `time_stop`, `mtf`. Test tự động: `tests/integration/test_ab_filters.py`
   (`@pytest.mark.slow`).
-- **Breakout-retest signal được tôn trọng bất kể nhãn regime của đúng bar khớp retest** — máy trạng thái retest (`strategies/breakout_retest.py`) chạy mỗi bar không điều kiện (yêu cầu của plan), nhưng khi retest hoàn tất và phát tín hiệu, `main_loop.decide` LUÔN dùng tín hiệu đó làm `signal` chính, không kiểm tra lại xem bar khớp retest có đang ở "regime trend" hay không (điều kiện trend chỉ áp dụng lúc breakout ban đầu được ghi nhận). Đây là lựa chọn hợp lý về giao dịch (một nhịp ADX rớt 1 bar không nên xoá mất retest đang chờ — đúng tinh thần plan) nhưng là một diễn giải cụ thể chưa có trong plan gốc, ghi nhận ở đây.
+- **Breakout-retest signal được tôn trọng bất kể nhãn regime của đúng bar khớp retest** — máy trạng thái retest (`strategies/breakout_retest.py`) chạy mỗi bar không điều kiện (yêu cầu của plan), nhưng khi retest hoàn tất và phát tín hiệu, `main_loop.decide` LUÔN dùng tín hiệu đó làm `signal` chính, không kiểm tra lại xem bar khớp retest có đang ở "regime trend" hay không (điều kiện trend chỉ áp dụng lúc breakout ban đầu được ghi nhận). *Ghi chú 2026-07-19: mô tả trên là Ý ĐỊNH, nhưng code cũ chưa làm đúng — điều kiện regime bị xét ở bar retest, còn việc ARM breakout lại KHÔNG xét regime (lỗ hổng: breakout arm & khớp cả trong regime range). Đã sửa đúng ý định này, xem mục "Sửa phễu tín hiệu" cuối file.*
 - **MEAN_REVERSION hiếm khi khớp đủ 3 điều kiện đồng thời (ADX<25 AND ER<0.3 AND RSI quá mua/bán)** — đã kiểm chứng bằng dữ liệu synthetic: với tham số mặc định, tổ hợp cả ba điều kiện xảy ra ~1 lần / 20 000 bar H1. Đây không phải lỗi — về bản chất RSI cực trị thường đi kèm biến động có hướng (ADX tăng), trong khi MR yêu cầu đúng lúc thị trường "range". `python -m bot.cli replay --seed 42 --bars 5000` vì vậy thường chỉ sinh lệnh BREAKOUT; test suite (`test_main_loop.py`) verify từng nhánh MR bằng context dựng tay thay vì phụ thuộc random walk.
 - **`dxy_change_1h_pct`** tính bằng `(close[-1] - close[-1-lookback_hours]) / close[-1-lookback_hours] * 100` trên khung 1H của chuỗi DXY resample — công thức % thay đổi chuẩn, `lookback_hours` lấy từ `filters.dxy.lookback_hours` (mặc định 1).
 - **`account_state.open_trades`** trong Phase 2/3 chỉ phản ánh 0 hoặc 1 (khớp với `ONE_TRADE_PER_SYMBOL=true` mặc định, 1 symbol) — không phải giới hạn kiến trúc, `OrderEngine`/`Runner` đều nhận `OpenTrade | None` đơn lẻ để giữ đơn giản cho Phase 1/2; mở rộng đa lệnh sẽ cần đổi sang `list[OpenTrade]`, đã note trong `order_engine.py`.
+
+## Dữ liệu thật & chi phí (Plan 02)
+
+- **Chính sách gap**: import CSV KHÔNG fill bar thiếu — engine vốn xử lý chuỗi bar đóng tuần
+  tự nên gap (cuối tuần forex, ngày nghỉ lễ VN...) là hợp lệ. `count_grid_gaps` chỉ đếm số
+  slot thiếu trên lưới (anchor tại bar đầu tiên cho 15m/1H/4H; số ngày lịch thiếu cho 1D) và
+  ghi vào `dataset.gap_count` — thông tin hiển thị, không chặn import/run. Việc lệch lưới
+  (timestamp không phải bội số của tf, hoặc 1D không cùng giờ-phút-giây trong ngày) mới bị từ
+  chối (`FeedError`), vì đó là lỗi dữ liệu chứ không phải gap.
+- **Căn chỉnh thời gian DXY**: theo đúng C11 — giá trị DXY nhìn thấy tại clock `t` luôn là bar
+  DXY đã đóng gần nhất tính tới `t` (`Feed.bars()` filter trước `.tail(n)` như giá chính), KHÔNG
+  bao giờ forward-fill từ tương lai. Nếu chuỗi DXY thiếu bar tại thời điểm đánh giá, filter
+  `dxy` trả `passed=None, stage="no_data"` (đã có sẵn từ Phase 2, không đổi) thay vì chặn lệnh.
+  `filters.dxy.dataset_id` (mới) trỏ tới một dataset `kind='csv', symbol='DXY'` đã import riêng;
+  để trống thì dùng DXY synthetic bundled như trước (không đổi hành vi mặc định).
+- **Mô hình slippage bảo thủ (§10)**: `execution.costs.slippage_pips` luôn làm xấu đi giá vào
+  lệnh (spread + slippage cộng bất lợi vào cả BUY lẫn SELL) và giá thoát SL (kể cả SL đã dời
+  về breakeven sau TP1, và cả trường hợp gap-through-SL fill tại giá mở bar) — không bao giờ
+  cải thiện. Giá TP giữ nguyên, không cộng/trừ gì — mô hình cố ý bảo thủ (không lạc quan hoá
+  kết quả backtest). `commission_per_lot` trừ một lần vào `pnl_amount` lúc đóng lệnh hoàn toàn
+  (theo tổng `lot_size`, không theo phần TP1 lẻ), KHÔNG đụng vào `pnl_r` — R-multiple giữ là
+  một đại lượng thuần khoảng-cách-giá để các filter dựa trên streak/equity-curve không bị ảnh
+  hưởng bởi cấu hình chi phí. Tất cả cost mặc định = 0 nên `test_replay_golden` không đổi hash;
+  `test_replay_golden_with_costs` pin một hash riêng khi cost > 0.
+
+## Sửa phễu tín hiệu & cấu trúc R (2026-07-19)
+
+Backtest thực tế cho ra rất ít lệnh và thua ròng. Rà soát toàn bộ chuỗi
+strategy → filter → decision tìm ra 2 bug ghép nối + một cụm tham số tự triệt tiêu nhau.
+Các thay đổi (đổi hành vi mặc định — golden stream đổi là CHỦ ĐÍCH):
+
+1. **Regime gate chuyển về thời điểm ARM (bar breakout), không phải bar retest**
+   (`main_loop.decide` → `breakout_retest.evaluate(arm_buy, arm_sell, min_range_atr_mult)`).
+   Trước đây: (a) tín hiệu retest bị `wait` nếu regime "nhấp nháy" đúng bar retest — mâu
+   thuẫn với diễn giải đã ghi ở mục Phase 2/3; (b) **bug thật**: khi regime là RANGE
+   (candidate=MEAN_REVERSION), tín hiệu breakout vẫn lọt qua `resolve_decision` và ĐẶT LỆNH —
+   phần lớn lệnh khớp thực tế là false-breakout trong vùng chop. Giờ: breakout mới chỉ được
+   ARM khi candidate=BREAKOUT **và** hướng khớp trend mode (BULL→BUY, BEAR→SELL); một khi đã
+   arm, retest sống sót qua nhấp nháy regime (đúng tinh thần plan). `resolve_decision` chỉ
+   `wait/regime` khi **không** có tín hiệu.
+2. **`range_width` chuyển thành điều kiện ARM** — trước đây nó chỉ được xét khi `signal is
+   None` trong `resolve_decision`, tức KHÔNG BAO GIỜ chặn được lệnh nào (no-op). Giờ độ rộng
+   range tiền-breakout (`range_high − range_low > atr_mult × ATR14`) được kiểm ngay tại bar
+   breakout trong state machine.
+3. **Retest bị filter hạ nguồn chặn KHÔNG đốt state** — trước đây `evaluate` reset về
+   `initial()` ngay khi phát tín hiệu, kể cả khi wick/mtf/session/account_risk chặn lệnh.
+   Giờ `main_loop` giữ `AWAITING_RETEST` (tăng `bars_waited`) trong ngân sách C6 còn lại.
+4. **SL breakout neo theo bar retest, chặn trên tại level đã phá** (bảng mirror ở trên).
+   Công thức cũ `range_low − 0.5×ATR` làm 1R ≈ cả bề rộng range (≥ 2×ATR do range_width
+   yêu cầu width > 1.5×ATR) ⇒ TP1 = 1.5R ≈ 3×ATR — ngoài tầm với của time stop ⇒ phân phối
+   kết quả chỉ còn SL −1R và TIME_STOP nhiễu ⇒ thua ròng cấu trúc.
+5. **Time stop theo bar** (`filters.time_stop.bars = 16`, nhân `tf_duration`; `hours` giữ làm
+   fallback khi `bars: null`) — C5 "8h đồng hồ thật" thù địch với timeframe: 4H chết sau 2
+   bar, 1D chết ngay bar đầu. Ngữ nghĩa so sánh wall-clock trong `is_expired` GIỮ NGUYÊN
+   (vẫn C5), chỉ ngân sách giờ được suy từ bar × timeframe tại `Runner.__init__`.
+6. **`confirmation_lag` không áp cho BREAKOUT** — retest tự thân đã có xác nhận
+   (`close` vượt lại level); check `close[-1] > close[-2]` (sai lệch #14) loại đúng hình
+   mẫu pullback-rồi-từ-chối kinh điển (close bar trước cao hơn là tất yếu khi đang pullback
+   BUY). Giữ nguyên cho MEAN_REVERSION.
+7. **Nới tham số tự-triệt-tiêu** (default.yaml + models.py đồng bộ): ADX trend 30→25
+   (ADX trễ — sau range 20 bar hầu như không kịp >30 trong 5 bar retest), range 25→23;
+   ER trend 0.6→0.35 (0.6/10-bar ≈ đường thẳng tuyệt đối, AND với ADX-trend gần như không
+   bao giờ đồng thời), range giữ 0.30; wick 0.5→0.33 (D4 revised); `sl_scale_mid` 1.5→1.2
+   (trước bằng đúng `sl_scale_high` — dải mid vô nghĩa).
+
+Kiểm chứng: unit + integration suite pass (golden test chỉ so determinism giữa 2 lần chạy,
+không pin hằng số nên không cần re-pin); xem thêm histogram lý do trong bảng `decision` để
+so trước/sau trên dữ liệu thật.

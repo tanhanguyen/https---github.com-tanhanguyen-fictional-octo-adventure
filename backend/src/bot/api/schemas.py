@@ -154,11 +154,28 @@ class DatasetCreateIn(BaseModel):
     bars: int = 5000
 
 
+class DatasetImportIn(BaseModel):
+    path: str
+    symbol: str
+    native_tf: str = "15m"
+
+
 class DatasetOut(BaseModel):
     id: str
-    seed: int
-    n_candles_15m: int
+    kind: str = "synthetic"
     created_at_utc: str
+    # synthetic-only
+    seed: int | None = None
+    n_candles_15m: int | None = None
+    # csv-only
+    symbol: str | None = None
+    native_tf: str | None = None
+    source_path: str | None = None
+    file_sha256: str | None = None
+    start_ts: str | None = None
+    end_ts: str | None = None
+    bar_count: int | None = None
+    gap_count: int | None = None
 
 
 class RunOut(BaseModel):
@@ -175,6 +192,7 @@ class RunOut(BaseModel):
 class RunCreateIn(BaseModel):
     seed: int = 42
     bars: int = 5000
+    dataset_id: str | None = None
 
 
 class RunStepOut(BaseModel):

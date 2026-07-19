@@ -20,8 +20,9 @@ SEED = 42
 # Filters the plan requires to reliably change the decision stream on toggle at
 # this seed/bars (docs/decisions.md, tech-debt/A-B harness section). mtf is excluded --
 # empirically inert at seed=42/bars=5000 (see _AB_MAY_BE_INERT in bot.cli and
-# docs/decisions.md), same class of rarity as MR's 3-condition AND.
-_MUST_CHANGE = {"confirmation_lag", "session", "adx_filter", "er_filter", "trend"}
+# docs/decisions.md), same class of rarity as MR's 3-condition AND. confirmation_lag
+# moved to may-be-inert 2026-07-19: it no longer applies to BREAKOUT signals.
+_MUST_CHANGE = {"session", "adx_filter", "er_filter", "trend"}
 
 
 def _setup():

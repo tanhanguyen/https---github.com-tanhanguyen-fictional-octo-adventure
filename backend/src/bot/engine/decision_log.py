@@ -57,7 +57,10 @@ def resolve_decision(
     if any(_is_warmup(fr[fid]) for fid in WARMUP_REGIME_IDS if fid in fr):
         return DecisionOutcome(reason="wait", stage="warmup", detail="indicator warmup (C12)")
 
-    if regime_undecided or strategy_candidate is None:
+    # Regime gates NEW breakout arming and MR candidacy (main_loop), not a signal that
+    # already exists: a pending retest armed under a valid regime must survive a regime
+    # flicker on the retest bar itself (plan requirement).
+    if (regime_undecided or strategy_candidate is None) and signal is None:
         adx_r = fr.get("adx_filter")
         detail = adx_r.detail if adx_r is not None else "regime undecided"
         return DecisionOutcome(reason="wait", stage="regime", detail=detail)
@@ -100,7 +103,7 @@ def resolve_decision(
     return DecisionOutcome(
         reason="done",
         stage="place_order",
-        detail=f"{strategy_candidate.value} {signal.direction.value}",
+        detail=f"{signal.strategy.value} {signal.direction.value}",
     )
 
 

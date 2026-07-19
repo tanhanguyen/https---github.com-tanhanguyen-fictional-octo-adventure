@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from bot.config.models import ExecutionCostsConfig
 from bot.core.types import Bar, Direction, InstrumentSpec, OrderStatus, StrategyName, TPRules
 from bot.engine import risk_manager
 from bot.filters.time_stop import is_expired
@@ -147,10 +148,27 @@ def _bar_exit(
     return None
 
 
+def _worsen_sl_by_slippage(
+    direction: Direction, price: float, slippage_pips: float, pip: float
+) -> float:
+    """§10: SL exits are worsened by slippage (conservative model); TP is left
+    exact. BUY stops out lower, SELL stops out higher than the raw level/gap price."""
+    if slippage_pips <= 0:
+        return price
+    slip = slippage_pips * pip
+    return price - slip if direction == Direction.BUY else price + slip
+
+
 class OrderEngine:
-    def __init__(self, instrument: InstrumentSpec, intrabar_priority: str = "sl_first") -> None:
+    def __init__(
+        self,
+        instrument: InstrumentSpec,
+        intrabar_priority: str = "sl_first",
+        costs: ExecutionCostsConfig | None = None,
+    ) -> None:
         self.instrument = instrument
         self.priority = intrabar_priority
+        self.costs = costs or ExecutionCostsConfig()
 
     def _pnl_amount(
         self, direction: Direction, entry: float, exit_price: float, lot: float
@@ -173,11 +191,13 @@ class OrderEngine:
         events: list[TradeEventRecord] = []
 
         if trade.status == OrderStatus.PENDING:
-            spread_amount = self.instrument.spread_pips * self.instrument.pip
+            # §10: entry cost = spread + slippage, both unfavorable (config, versioned;
+            # instrument.spread_pips is no longer read here -- see plans/02-real-data.md).
+            cost_amount = (self.costs.spread_pips + self.costs.slippage_pips) * self.instrument.pip
             entry = (
-                bar.open + spread_amount
+                bar.open + cost_amount
                 if trade.direction == Direction.BUY
-                else bar.open - spread_amount
+                else bar.open - cost_amount
             )
 
             cancelled = (trade.direction == Direction.BUY and entry <= trade.sl) or (
@@ -258,6 +278,10 @@ class OrderEngine:
 
         if outcome1 is not None:
             price, kind = outcome1
+            if kind == "SL":
+                price = _worsen_sl_by_slippage(
+                    trade.direction, price, self.costs.slippage_pips, self.instrument.pip
+                )
             if kind == "SL" or trade.tp_rules.kind == "ABSOLUTE" or trade.tp1_hit:
                 # Full close (either a stop, an absolute-TP strategy, or the remaining
                 # half after TP1 already happened).
@@ -291,6 +315,10 @@ class OrderEngine:
             )
             if outcome2 is not None:
                 price2, kind2 = outcome2
+                if kind2 == "SL":
+                    price2 = _worsen_sl_by_slippage(
+                        trade.direction, price2, self.costs.slippage_pips, self.instrument.pip
+                    )
                 closed = self._finalize(
                     trade, price2, bar.open_ts, events, "BE" if kind2 == "SL" else "TP2"
                 )
@@ -325,6 +353,11 @@ class OrderEngine:
     ) -> ClosedResult:
         self._realize_partial(trade, price, trade.remaining_fraction)
         events.append(TradeEventRecord("CLOSED", ts, price, kind))
+
+        # §10: commission is a $ cost, charged once per round-turn on the full lot;
+        # it does NOT touch pnl_r (R stays a pure price-distance risk metric so
+        # equity-curve/streak filters are unaffected structurally).
+        trade.realized_pnl_amount -= self.costs.commission_per_lot * trade.lot_size
 
         pnl_r = trade.realized_pnl_r
         if pnl_r > EPS_R:

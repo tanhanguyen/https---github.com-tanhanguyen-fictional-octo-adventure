@@ -18,6 +18,7 @@ def evaluate(ctx: FilterContext) -> FilterResult:
     if not cfg.enabled:
         return disabled_result(FILTER_ID, FilterKind.EXIT)
 
+    budget = f"{cfg.bars} bars" if cfg.bars is not None else f"{cfg.hours}h"
     return FilterResult(
         id=FILTER_ID,
         kind=FilterKind.EXIT,
@@ -25,8 +26,8 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         evaluated=True,
         passed=None,
         blocking=False,
-        values={"hours": cfg.hours, "after_tp1": cfg.after_tp1},
-        detail=f"time_stop={cfg.hours}h after_tp1={cfg.after_tp1}",
+        values={"hours": cfg.hours, "bars": cfg.bars, "after_tp1": cfg.after_tp1},
+        detail=f"time_stop={budget} after_tp1={cfg.after_tp1}",
     )
 
 
