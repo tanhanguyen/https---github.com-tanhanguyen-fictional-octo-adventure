@@ -113,6 +113,7 @@ def persist(
     bar_ts_utc: str,
     bundle: DecisionBundle,
     trade_id: int | None,
+    symbol: str,
 ) -> int:
     decision_id = repo.insert_decision(
         conn,
@@ -124,6 +125,7 @@ def persist(
         bundle.strategy.value if bundle.strategy else None,
         bundle.signal.direction.value if bundle.signal else None,
         trade_id,
+        symbol,
     )
     for fid in ALL_FILTER_IDS:
         r = bundle.filter_results.get(fid)

@@ -75,8 +75,10 @@ export function RunControls({ run, onChanged }: Props) {
           disabled={busy || !run}
           onClick={() =>
             withBusy(async () => {
-              const summary = await api.step()
-              setLastReason(`${summary.reason} / ${summary.stage}`)
+              const summaries = await api.step()
+              setLastReason(
+                summaries.map((s) => `${s.symbol || '—'}: ${s.reason} / ${s.stage}`).join('; '),
+              )
               onChanged()
             })
           }

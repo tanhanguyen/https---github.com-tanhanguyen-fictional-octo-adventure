@@ -167,7 +167,10 @@ kê ở trên.
 - **Breakout-retest signal được tôn trọng bất kể nhãn regime của đúng bar khớp retest** — máy trạng thái retest (`strategies/breakout_retest.py`) chạy mỗi bar không điều kiện (yêu cầu của plan), nhưng khi retest hoàn tất và phát tín hiệu, `main_loop.decide` LUÔN dùng tín hiệu đó làm `signal` chính, không kiểm tra lại xem bar khớp retest có đang ở "regime trend" hay không (điều kiện trend chỉ áp dụng lúc breakout ban đầu được ghi nhận). *Ghi chú 2026-07-19: mô tả trên là Ý ĐỊNH, nhưng code cũ chưa làm đúng — điều kiện regime bị xét ở bar retest, còn việc ARM breakout lại KHÔNG xét regime (lỗ hổng: breakout arm & khớp cả trong regime range). Đã sửa đúng ý định này, xem mục "Sửa phễu tín hiệu" cuối file.*
 - **MEAN_REVERSION hiếm khi khớp đủ 3 điều kiện đồng thời (ADX<25 AND ER<0.3 AND RSI quá mua/bán)** — đã kiểm chứng bằng dữ liệu synthetic: với tham số mặc định, tổ hợp cả ba điều kiện xảy ra ~1 lần / 20 000 bar H1. Đây không phải lỗi — về bản chất RSI cực trị thường đi kèm biến động có hướng (ADX tăng), trong khi MR yêu cầu đúng lúc thị trường "range". `python -m bot.cli replay --seed 42 --bars 5000` vì vậy thường chỉ sinh lệnh BREAKOUT; test suite (`test_main_loop.py`) verify từng nhánh MR bằng context dựng tay thay vì phụ thuộc random walk.
 - **`dxy_change_1h_pct`** tính bằng `(close[-1] - close[-1-lookback_hours]) / close[-1-lookback_hours] * 100` trên khung 1H của chuỗi DXY resample — công thức % thay đổi chuẩn, `lookback_hours` lấy từ `filters.dxy.lookback_hours` (mặc định 1).
-- **`account_state.open_trades`** trong Phase 2/3 chỉ phản ánh 0 hoặc 1 (khớp với `ONE_TRADE_PER_SYMBOL=true` mặc định, 1 symbol) — không phải giới hạn kiến trúc, `OrderEngine`/`Runner` đều nhận `OpenTrade | None` đơn lẻ để giữ đơn giản cho Phase 1/2; mở rộng đa lệnh sẽ cần đổi sang `list[OpenTrade]`, đã note trong `order_engine.py`.
+- ~~`account_state.open_trades` trong Phase 2/3 chỉ phản ánh 0 hoặc 1...~~ **Vượt qua bởi
+  plan 04** (mục "Plan 04 — Đa symbol" cuối file): `open_trades_count` giờ portfolio-wide thật,
+  `Runner` nhận `dict[str, SymbolContext]` (mỗi symbol một `OpenTrade | None`), không còn giới
+  hạn 0/1 hay `OpenTrade | None` đơn lẻ.
 
 ## Dữ liệu thật & chi phí (Plan 02)
 
@@ -236,3 +239,63 @@ Các thay đổi (đổi hành vi mặc định — golden stream đổi là CH�
 Kiểm chứng: unit + integration suite pass (golden test chỉ so determinism giữa 2 lần chạy,
 không pin hằng số nên không cần re-pin); xem thêm histogram lý do trong bảng `decision` để
 so trước/sau trên dữ liệu thật.
+
+## Plan 04 — Đa symbol: portfolio thật (2026-07-19)
+
+Xoá ghi chú "0/1" cũ (mục Phase 2/3 phía trên, dòng về `account_state.open_trades`):
+`open_trades_count` giờ là **portfolio-wide thật** (tổng lệnh mở/pending qua mọi symbol),
+`Runner`/`OrderEngine` nhận `dict[str, SymbolContext]` (mỗi symbol một `OpenTrade | None`
+trong `SymbolContext.trade`) thay vì `OpenTrade | None` đơn lẻ. Order xử lý symbol trong
+cùng một mốc clock là **alphabet** (deterministic).
+
+1. **`Runner.step()` đổi shape trả về**: `list[StepSummary]` (một phần tử/symbol xử lý ở
+   tick đó) thay vì `StepSummary | None`. Một "tick" là mốc bar-close SỚM NHẤT trong số mọi
+   symbol (mỗi symbol timeframe riêng); mọi symbol đóng bar đúng tick đó được xử lý theo thứ
+   tự alphabet — đây là cơ chế quyết định ai giành slot cuối khi 2 symbol cùng tín hiệu `done`
+   trong cùng tick (`MAX_CONCURRENT_TRADES`). Test: `tests/unit/test_multi_symbol_clock.py`,
+   `tests/unit/test_account_risk_portfolio.py`.
+2. **Dataset seed derivation — chỉ đổi khi có >1 symbol** — `bot.data.dataset.
+   named_child_seed(base_seed, symbol)` (SeedSequence + spawn_key = hash tên symbol) áp dụng
+   khi `len(enabled symbols) > 1`, để thêm symbol không đổi stream của symbol cũ. Config
+   1-symbol (auto-migrated, trường hợp phổ biến nhất) dùng **thẳng `base_seed`** — đạt đúng
+   mục tiêu lý tưởng của plan ("hành vi phải giống hệt bản trước"): dataset, decision stream
+   VÀ equity của mọi golden test 1-symbol giữ nguyên bit-for-bit so với trước plan 04.
+   Phát hiện khi review: ban đầu áp `named_child_seed` cho MỌI config kể cả 1-symbol — dataset
+   đổi khiến `test_costs_strictly_hurt_equity_vs_zero_cost_golden_run` fail (một shift giá vào
+   lệnh nhỏ do spread/slippage đổi thời điểm chạm SL/TP intrabar, khiến trade chạy xa hơn thay
+   vì dừng breakeven cùng bar — hiệu ứng cánh bướm vốn có của backtest theo bar, không phải bug
+   logic) — đã sửa bằng quy tắc trên thay vì nới lỏng assertion của test.
+3. **DXY dùng chung cho cả portfolio** — lấy từ symbol FOREX đầu tiên (alphabet) trong danh
+   sách enabled, tái dùng bundle `dxy` được sinh cùng lúc với giá symbol đó (không sinh dataset
+   DXY riêng) — đơn giản hoá so với "mỗi symbol tự tương quan DXY", chấp nhận được vì filter
+   `dxy` chỉ đọc %-thay-đổi, không phân biệt tương quan với symbol nào.
+4. **Giới hạn phát hiện khi build multi-symbol demo (quan trọng, không phải phần plan yêu
+   cầu nhưng bắt buộc phải xử lý để tránh kết quả sai)**: `OrderEngine._pnl_amount` tính
+   `price_move × lot × contract_size` và coi thẳng kết quả là tiền tài khoản (USD) — đúng khi
+   **quote currency == account currency** (EURUSD, GBPUSD, XAUUSD đều quote bằng USD). Với
+   **USDJPY** (quote = JPY), công thức này sai hoàn toàn nếu không quy đổi JPY→USD theo tỷ giá
+   — gây lãi/lỗ ảo gấp hàng trăm lần risk dự kiến (đã bắt được khi review: một lệnh 1% risk
+   cho ra pnl thật -$546 trên equity 500). Đây là **giới hạn kiến trúc có trước plan 04**
+   (engine vốn build cho 1 symbol EURUSD), không phải bug của plan 04, và **không sửa ở đây**
+   — phạm vi multi-currency P&L conversion là việc của plan 10 (forex đa venue). Xử lý: `config/
+   instruments.yaml` vẫn giữ `USDJPY` (pip=0.01) làm entry hợp lệ CHO RIÊNG mục đích test
+   `risk_manager.calculate_lot` cách ly (pip≠EURUSD sizing, `tests/unit/test_risk_manager.py`)
+   — không dùng USDJPY trong bất kỳ multi-symbol integration/golden test hay portfolio mẫu
+   nào; các test đó dùng EURUSD/GBPUSD/XAUUSD (đều quote-USD, P&L đúng với engine hiện tại).
+5. **`account_risk` filter thêm nhánh `total_risk_cap`** — khi `risk.max_total_open_risk_pct`
+   được set (mặc định `None` = tắt, không đổi hành vi/hash), tổng `risk_pct_effective` của
+   mọi lệnh mở/pending vượt ngưỡng → `reason=max_concurrent_trades_reached`,
+   `stage=total_risk_cap` (từ vựng §8 giữ nguyên, chỉ thêm stage — đúng deviation #13).
+6. **`decision.symbol`, `run.symbols_json`, `run_symbol_dataset`** thêm ở migration
+   `003_multi_symbol.sql`. `run.symbol`/`run.dataset_id` giữ nguyên vai trò hiển thị
+   (comma-joined / symbol đầu tiên theo alphabet) — không còn là nguồn chân lý, chỉ để không
+   phá các chỗ đang đọc 2 cột này.
+7. **Chart nến (`/api/runs/{id}/bars`) vẫn chỉ hiển thị 1 symbol** (symbol đầu của run, qua
+   `run.dataset_id`) — không mở rộng dropdown-chọn-symbol cho chart trong plan này (Decisions/
+   Trades đã có filter theo symbol; Dashboard có bảng vị thế `open_trades_by_symbol` đủ mọi
+   symbol). Giới hạn phạm vi có chủ đích, không phải thiếu sót.
+
+Kiểm chứng: `python -m bot.cli replay --seed 42 --bars 600` (1-symbol, auto-migrated) chạy 2
+lần cho `decision_stream_hash` ổn định; portfolio 3-symbol (EURUSD/GBPUSD/XAUUSD) qua API tạo
+ra cả 2 stage `account_risk`/`max_concurrent_trades` và `one_trade_per_symbol` trong decision
+histogram (xem `tests/unit/test_account_risk_portfolio.py`).

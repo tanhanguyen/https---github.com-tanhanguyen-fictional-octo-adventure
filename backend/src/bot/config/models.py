@@ -6,9 +6,9 @@ D2: single parameter set (no per-asset-type table). D3: 16 independent filter to
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bot.core.types import FilterKind
 
@@ -252,6 +252,51 @@ class RiskConfig(StrictModel):
     intrabar_priority: Literal["sl_first", "path"] = "sl_first"
     cancel_if_open_beyond_sl: bool = True
     allow_short: bool = True  # D11: false for STOCK_VN_CASH
+    # Plan 04, user decision 2026-07-18 đợt 3: optional account-wide cap on the SUM of
+    # risk_pct_effective across all open/pending trades. None = off (default, unchanged
+    # behavior/golden hash); user opts in via Config UI (2%/4%/6% tuỳ giai đoạn).
+    max_total_open_risk_pct: float | None = None
+
+
+# ---------------------------------------------------------------------------
+# Plan 04: multi-symbol portfolio — `symbols` is both the trade-list and the
+# correlation whitelist (user decision 2026-07-18 đợt 3). `overrides` is a deep-merge
+# patch restricted to filters.*/strategies.*/timeframe/risk.allow_short/
+# risk.max_risk_per_trade_pct -- everything account/execution-wide stays global.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_OVERRIDE_TOP_KEYS = {"filters", "strategies", "timeframe"}
+_ALLOWED_OVERRIDE_RISK_KEYS = {"allow_short", "max_risk_per_trade_pct"}
+
+
+class SymbolEntry(StrictModel):
+    symbol: str
+    symbol_type: SymbolTypeLiteral
+    enabled: bool = True
+    # None -> derive from the run's base seed via named_child_seed(base_seed, symbol)
+    # (bot.data.dataset) so adding a symbol never perturbs another symbol's stream.
+    dataset_seed: int | None = None
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_overrides(self) -> SymbolEntry:
+        bad_top = set(self.overrides) - _ALLOWED_OVERRIDE_TOP_KEYS - {"risk"}
+        if bad_top:
+            raise ValueError(
+                f"symbols[{self.symbol}].overrides: keys not allowed: {sorted(bad_top)} "
+                f"(only {sorted(_ALLOWED_OVERRIDE_TOP_KEYS | {'risk'})})"
+            )
+        risk_override = self.overrides.get("risk")
+        if risk_override is not None:
+            if not isinstance(risk_override, dict):
+                raise ValueError(f"symbols[{self.symbol}].overrides.risk must be a mapping")
+            bad_risk = set(risk_override) - _ALLOWED_OVERRIDE_RISK_KEYS
+            if bad_risk:
+                raise ValueError(
+                    f"symbols[{self.symbol}].overrides.risk: keys not allowed: "
+                    f"{sorted(bad_risk)} (only {sorted(_ALLOWED_OVERRIDE_RISK_KEYS)})"
+                )
+        return self
 
 
 class BotConfig(StrictModel):
@@ -265,6 +310,33 @@ class BotConfig(StrictModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     strategies: StrategiesConfig = Field(default_factory=StrategiesConfig)
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
+    # Plan 04: portfolio symbol list + whitelist. Empty -> auto-migrated (see validator
+    # below) to a single entry mirroring `symbol`/`symbol_type` -- byte-identical
+    # single-symbol behavior for old configs.
+    symbols: list[SymbolEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _migrate_legacy_single_symbol(self) -> BotConfig:
+        if not self.symbols:
+            self.symbols = [SymbolEntry(symbol=self.symbol, symbol_type=self.symbol_type)]
+        return self
+
+
+def effective_config_for_symbol(base: BotConfig, entry: SymbolEntry) -> BotConfig:
+    """Deep-merge `entry.overrides` (+ symbol/symbol_type) onto `base`, producing the
+    per-symbol effective config main_loop/engine actually run against."""
+    from bot.config.loader import deep_merge  # local import: loader imports models
+
+    patch: dict[str, Any] = {
+        "symbol": entry.symbol,
+        "symbol_type": entry.symbol_type,
+        **{k: v for k, v in entry.overrides.items() if k != "risk"},
+    }
+    if "risk" in entry.overrides:
+        patch["risk"] = entry.overrides["risk"]
+    base_dict = base.model_dump(mode="json", exclude={"symbols"})
+    merged = deep_merge(base_dict, patch)
+    return BotConfig.model_validate(merged)
 
 
 class ConfigVersion(StrictModel):

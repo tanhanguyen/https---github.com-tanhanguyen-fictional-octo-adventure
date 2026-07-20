@@ -30,31 +30,38 @@ def create_run(
     return _run_out(info)
 
 
-@router.post("/run/step", response_model=RunStepOut)
-def step(service: RunnerService = Depends(get_runner_service)) -> RunStepOut:
+@router.post("/run/step", response_model=list[RunStepOut])
+def step(service: RunnerService = Depends(get_runner_service)) -> list[RunStepOut]:
     try:
-        summary = service.step()
+        summaries = service.step()
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if summary is None:
-        return RunStepOut(
-            bar_ts="",
-            reason="done",
-            stage="feed_exhausted",
-            trade_event_types=[],
-            closed_result=None,
-            equity=0.0,
-            exhausted=True,
+    if not summaries:
+        return [
+            RunStepOut(
+                bar_ts="",
+                symbol="",
+                reason="done",
+                stage="feed_exhausted",
+                trade_event_types=[],
+                closed_result=None,
+                equity=0.0,
+                exhausted=True,
+            )
+        ]
+    return [
+        RunStepOut(
+            bar_ts=s.bar_ts,
+            symbol=s.symbol,
+            reason=s.reason,
+            stage=s.stage,
+            trade_event_types=s.trade_event_types,
+            closed_result=s.closed_result,
+            equity=s.equity,
+            exhausted=False,
         )
-    return RunStepOut(
-        bar_ts=summary.bar_ts,
-        reason=summary.reason,
-        stage=summary.stage,
-        trade_event_types=summary.trade_event_types,
-        closed_result=summary.closed_result,
-        equity=summary.equity,
-        exhausted=False,
-    )
+        for s in summaries
+    ]
 
 
 @router.post("/run/play", response_model=RunOut)

@@ -24,7 +24,7 @@ import pandas as pd
 from bot.analytics.metrics import RunReport, compute_run_report, diff_histograms, diff_reports
 from bot.config.loader import deep_merge, load_default_config, load_instruments
 from bot.config.metadata import metadata_by_field
-from bot.config.models import BotConfig
+from bot.config.models import BotConfig, effective_config_for_symbol
 from bot.core.clock import Clock
 from bot.core.errors import ConfigError
 from bot.core.timeframes import TF_DURATION, tf_rank
@@ -34,11 +34,13 @@ from bot.data.dataset import (
     DatasetSpec,
     import_csv_dataset,
     load_bundle_for_dataset,
+    named_child_seed,
 )
 from bot.data.dataset import dataset_id as compute_dataset_id
 from bot.data.feed import Feed
 from bot.db import repositories as repo
 from bot.db.connection import migrate
+from bot.engine.context import SymbolContext, build_symbol_context
 from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
 
@@ -86,7 +88,7 @@ class RunnerService:
 
         self.run_id: int | None = None
         self.runner: Runner | None = None
-        self.dataset_id_active: str | None = None
+        self.symbol_datasets_active: dict[str, str] | None = None
         self.config_version_id: int | None = None
 
         self._play_thread: threading.Thread | None = None
@@ -190,12 +192,19 @@ class RunnerService:
     # -------------------------------------------------------------- datasets
     @_locked
     def create_dataset(
-        self, seed: int, bars: int, symbol: str, rollover_tz: str, rollover_time: str
+        self,
+        seed: int,
+        bars: int,
+        symbol: str,
+        rollover_tz: str,
+        rollover_time: str,
+        start_price: float = 1.1000,
     ) -> str:
         n_candles_15m = (bars + 400) * 4
         spec = DatasetSpec(
             seed=seed,
             n_candles_15m=n_candles_15m,
+            start_price=start_price,
             symbol=symbol,
             rollover_tz=rollover_tz,
             rollover_time=rollover_time,
@@ -255,10 +264,10 @@ class RunnerService:
         return result
 
     # ------------------------------------------------------------- run/step
-    def _build_instrument(self, cfg: BotConfig) -> InstrumentSpec:
-        spec = self.instruments_yaml.get(cfg.symbol)
+    def _build_instrument(self, symbol: str) -> InstrumentSpec:
+        spec = self.instruments_yaml.get(symbol)
         if spec is None:
-            raise ConfigError(f"no instrument spec for symbol {cfg.symbol!r}")
+            raise ConfigError(f"no instrument spec for symbol {symbol!r}")
         return InstrumentSpec(
             symbol=spec["symbol"],
             contract_size=spec["contract_size"],
@@ -275,39 +284,83 @@ class RunnerService:
         with self.lock:
             self._stop_play_locked()
             cfg_row, cfg = self.get_active_config()
-            instrument = self._build_instrument(cfg)
+            enabled = [e for e in cfg.symbols if e.enabled]
+            if not enabled:
+                raise ConfigError("no enabled symbols in config.symbols")
 
-            if dataset_id is None:
-                dataset_id = self.create_dataset(
-                    seed, bars, cfg.symbol, cfg.trading_day_rollover_tz,
-                    cfg.trading_day_rollover_time,
+            # `dataset_id` (an explicit, pre-registered dataset -- e.g. imported CSV)
+            # only makes sense for a single-symbol config; multi-symbol portfolios
+            # always auto-generate one named-child-seeded synthetic dataset per symbol
+            # (plan 04 scope -- real per-symbol CSV portfolios are plan 05/07).
+            single_legacy = len(enabled) == 1 and dataset_id is not None
+
+            symbol_contexts: dict[str, SymbolContext] = {}
+            symbol_datasets: dict[str, str] = {}
+            dxy_frames = None
+
+            for entry in sorted(enabled, key=lambda e: e.symbol):
+                eff_cfg = effective_config_for_symbol(cfg, entry)
+                instrument = self._build_instrument(entry.symbol)
+
+                if single_legacy:
+                    assert dataset_id is not None
+                    row = repo.get_dataset(self.conn, dataset_id)
+                    if row is None:
+                        raise KeyError(dataset_id)
+                    if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(
+                        eff_cfg.timeframe
+                    ):
+                        raise ConfigError(
+                            f"dataset native_tf {row['native_tf']!r} is coarser than "
+                            f"config.timeframe {eff_cfg.timeframe!r} -- pick a "
+                            "finer-or-equal timeframe"
+                        )
+                    bundle = load_bundle_for_dataset(self.conn, dataset_id, eff_cfg)
+                    did = dataset_id
+                else:
+                    # Single-symbol synthetic configs use the raw seed directly --
+                    # byte-identical to pre-plan-04 behavior. named_child_seed only
+                    # kicks in with more than one enabled symbol (see
+                    # bot.engine.portfolio.build_portfolio_from_synthetic).
+                    if entry.dataset_seed is not None:
+                        derived_seed = entry.dataset_seed
+                    elif len(enabled) == 1:
+                        derived_seed = seed
+                    else:
+                        derived_seed = named_child_seed(seed, entry.symbol)
+                    start_price = self.instruments_yaml.get(entry.symbol, {}).get(
+                        "synthetic_start_price", 1.1000
+                    )
+                    did = self.create_dataset(
+                        derived_seed,
+                        bars,
+                        entry.symbol,
+                        eff_cfg.trading_day_rollover_tz,
+                        eff_cfg.trading_day_rollover_time,
+                        start_price=start_price,
+                    )
+                    bundle = load_bundle_for_dataset(self.conn, did, eff_cfg)
+
+                symbol_datasets[entry.symbol] = did
+                price_feed = Feed(frames=bundle.price)
+                if dxy_frames is None and eff_cfg.symbol_type == "FOREX" and bundle.dxy is not None:
+                    dxy_frames = bundle.dxy
+                symbol_contexts[entry.symbol] = build_symbol_context(
+                    eff_cfg, price_feed, instrument
                 )
 
-            row = repo.get_dataset(self.conn, dataset_id)
-            if row is None:
-                raise KeyError(dataset_id)
-            if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(cfg.timeframe):
-                raise ConfigError(
-                    f"dataset native_tf {row['native_tf']!r} is coarser than "
-                    f"config.timeframe {cfg.timeframe!r} -- pick a finer-or-equal timeframe"
-                )
-
-            bundle = load_bundle_for_dataset(self.conn, dataset_id, cfg)
-            price_feed = Feed(frames=bundle.price)
-            dxy_feed = Feed(frames=bundle.dxy) if bundle.dxy is not None else None
+            dxy_feed = Feed(frames=dxy_frames) if dxy_frames is not None else None
 
             run_db_id = repo.create_run(
-                self.conn, dataset_id, int(cfg_row["id"]), cfg.symbol, cfg.starting_equity
+                self.conn, int(cfg_row["id"]), symbol_datasets, cfg.starting_equity
             )
 
-            primary = cfg.timeframe
-            first_ts = price_feed.frames[primary].index[0].to_pydatetime()
-            clock = Clock(first_ts)
-            runner = Runner(self.conn, run_db_id, price_feed, dxy_feed, cfg, instrument, clock)
+            clock = Clock(min(sc.cursor for sc in symbol_contexts.values()))
+            runner = Runner(self.conn, run_db_id, symbol_contexts, dxy_feed, cfg, clock)
 
             self.run_id = run_db_id
             self.runner = runner
-            self.dataset_id_active = dataset_id
+            self.symbol_datasets_active = symbol_datasets
             self.config_version_id = int(cfg_row["id"])
 
             return self._run_info(run_db_id)
@@ -316,11 +369,13 @@ class RunnerService:
         cur = self.conn.execute("SELECT * FROM run WHERE id=?", (run_db_id,))
         row = cur.fetchone()
         assert row is not None
+        symbols_json = row["symbols_json"] if "symbols_json" in row.keys() else None
         return {
             "id": row["id"],
             "dataset_id": row["dataset_id"],
             "config_version_id": row["config_version_id"],
             "symbol": row["symbol"],
+            "symbols": json.loads(symbols_json) if symbols_json else row["symbol"].split(","),
             "status": row["status"],
             "starting_equity": row["starting_equity"],
             "created_at_utc": row["created_at_utc"],
@@ -333,7 +388,7 @@ class RunnerService:
             return None
         return self._run_info(self.run_id)
 
-    def step(self) -> StepSummary | None:
+    def step(self) -> list[StepSummary]:
         with self.lock:
             if self.runner is None:
                 raise RuntimeError("no active run — POST /api/run first")
@@ -355,8 +410,8 @@ class RunnerService:
             with self.lock:
                 if self.runner is None:
                     break
-                summary = self.runner.step()
-            if summary is None:
+                summaries = self.runner.step()
+            if not summaries:
                 break
             time.sleep(max(interval_ms, 1) / 1000.0)
 
@@ -380,7 +435,7 @@ class RunnerService:
             self._stop_play_locked()
             self.runner = None
             self.run_id = None
-            self.dataset_id_active = None
+            self.symbol_datasets_active = None
             self.config_version_id = None
 
     # ----------------------------------------------------------------- account
@@ -414,6 +469,9 @@ class RunnerService:
                 "risk_multiplier": 1.0,
                 "bot_enabled": True,
                 "blocked_reason": None,
+                "open_trades_by_symbol": {},
+                "open_risk_pct_total": 0.0,
+                "max_total_open_risk_pct": cfg.risk.max_total_open_risk_pct,
             }
         state = repo.get_account_state(self.conn, self.run_id)
         if state is None:
@@ -428,12 +486,26 @@ class RunnerService:
             remaining = max(0, account_risk_cfg.daily_max_losses - daily_loss_count)
         else:
             remaining = -1  # D10: unlimited (Stock VN)
+        open_trades_by_symbol = {
+            str(r[0]): int(r[1])
+            for r in self.conn.execute(
+                "SELECT symbol, COUNT(*) FROM trade WHERE run_id=? AND status IN "
+                "('PENDING','OPEN') GROUP BY symbol",
+                (self.run_id,),
+            )
+        }
+        open_risk_pct_total = (
+            sum(sc.trade.risk_pct_effective for sc in self.runner.symbols.values() if sc.trade)
+            if self.runner is not None
+            else 0.0
+        )
         return {
             "run_id": self.run_id,
             "equity": equity,
             "balance": float(state["balance"]),
             "drawdown_pct": drawdown_pct,
             "open_trades": int(state["open_trades"]),
+            "open_trades_by_symbol": open_trades_by_symbol,
             "current_risk_pct": cfg.risk.max_risk_per_trade_pct * float(state["risk_multiplier"]),
             "daily_loss_count": daily_loss_count,
             "daily_losses_remaining": remaining,
@@ -443,23 +515,31 @@ class RunnerService:
             "risk_multiplier": float(state["risk_multiplier"]),
             "bot_enabled": bool(state["bot_enabled"]),
             "blocked_reason": state["blocked_reason"],
+            "open_risk_pct_total": open_risk_pct_total,
+            "max_total_open_risk_pct": cfg.risk.max_total_open_risk_pct,
         }
 
     # ------------------------------------------------------------------ trades
     @_locked
     def list_trades(
-        self, status: str | None = None, run_id: int | None = None
+        self,
+        status: str | None = None,
+        run_id: int | None = None,
+        symbol: str | None = None,
     ) -> list[sqlite3.Row]:
         rid = run_id if run_id is not None else self.run_id
         if rid is None:
             return []
+        query = "SELECT * FROM trade WHERE run_id=?"
+        params: list[Any] = [rid]
         if status:
-            cur = self.conn.execute(
-                "SELECT * FROM trade WHERE run_id=? AND status=? ORDER BY id DESC",
-                (rid, status),
-            )
-        else:
-            cur = self.conn.execute("SELECT * FROM trade WHERE run_id=? ORDER BY id DESC", (rid,))
+            query += " AND status=?"
+            params.append(status)
+        if symbol:
+            query += " AND symbol=?"
+            params.append(symbol)
+        query += " ORDER BY id DESC"
+        cur = self.conn.execute(query, params)
         return list(cur.fetchall())
 
     @_locked
@@ -483,6 +563,7 @@ class RunnerService:
         reason: str | None = None,
         outcome: str | None = None,
         run_id: int | None = None,
+        symbol: str | None = None,
     ) -> list[sqlite3.Row]:
         rid = run_id if run_id is not None else self.run_id
         if rid is None:
@@ -496,6 +577,9 @@ class RunnerService:
             query += " AND reason='done'"
         elif outcome == "no_trade":
             query += " AND reason!='done'"
+        if symbol:
+            query += " AND symbol=?"
+            params.append(symbol)
         query += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
         cur = self.conn.execute(query, params)
@@ -674,6 +758,7 @@ class RunnerService:
             self.conn.execute("DELETE FROM equity_point WHERE run_id=?", (run_id,))
             self.conn.execute("DELETE FROM account_state WHERE run_id=?", (run_id,))
             self.conn.execute("DELETE FROM breakout_state WHERE run_id=?", (run_id,))
+            self.conn.execute("DELETE FROM run_symbol_dataset WHERE run_id=?", (run_id,))
             self.conn.execute("DELETE FROM run WHERE id=?", (run_id,))
         except Exception:
             self.conn.rollback()

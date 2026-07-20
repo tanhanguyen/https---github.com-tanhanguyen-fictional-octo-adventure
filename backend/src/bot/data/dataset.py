@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from bot.core.timeframes import tf_duration
@@ -37,6 +39,15 @@ def canonical_json(spec: DatasetSpec) -> str:
 
 def dataset_id(spec: DatasetSpec) -> str:
     return hashlib.sha256(canonical_json(spec).encode("utf-8")).hexdigest()[:16]
+
+
+def named_child_seed(base_seed: int, name: str) -> int:
+    """Plan 04: a deterministic per-symbol child seed derived from a portfolio-level
+    base seed + the symbol name (a *name*, not a positional index) -- so adding a new
+    symbol to `BotConfig.symbols` never perturbs another symbol's synthetic stream."""
+    name_hash = zlib.crc32(name.encode("utf-8")) & 0xFFFFFFFF
+    seq = np.random.SeedSequence(base_seed, spawn_key=(name_hash,))
+    return int(seq.generate_state(1, dtype=np.uint32)[0])
 
 
 def _generated_root() -> Path:

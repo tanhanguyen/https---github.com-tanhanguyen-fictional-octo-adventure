@@ -9,3 +9,38 @@ instruments:
     spread_pips: 0.0
     min_lot: 0.01
     lot_step: 0.01
+    synthetic_start_price: 1.1000
+  GBPUSD:
+    symbol: GBPUSD
+    symbol_type: FOREX
+    contract_size: 100000
+    pip: 0.0001
+    pip_value_per_lot: 10.0
+    spread_pips: 0.0
+    min_lot: 0.01
+    lot_step: 0.01
+    synthetic_start_price: 1.2700
+  # pip = 0.01 (100x EURUSD) -- the whole reason instrument spec had to move per-symbol
+  # (plan 04): using the global EURUSD spec here would size lots ~100x too small.
+  # synthetic_start_price must be JPY-scale too (~110), or sl_distance/pip produces a
+  # tiny pip count against a real risk_amount and wildly over-sizes the lot.
+  USDJPY:
+    symbol: USDJPY
+    symbol_type: FOREX
+    contract_size: 100000
+    pip: 0.01
+    pip_value_per_lot: 9.09  # ~10 USD/pip/lot at ~110 USDJPY, held fixed for determinism
+    spread_pips: 0.0
+    min_lot: 0.01
+    lot_step: 0.01
+    synthetic_start_price: 110.00
+  XAUUSD:
+    symbol: XAUUSD
+    symbol_type: FOREX
+    contract_size: 100
+    pip: 0.1
+    pip_value_per_lot: 1.0
+    spread_pips: 0.0
+    min_lot: 0.01
+    lot_step: 0.01
+    synthetic_start_price: 1900.0

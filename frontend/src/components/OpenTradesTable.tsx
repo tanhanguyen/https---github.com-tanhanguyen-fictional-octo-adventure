@@ -21,6 +21,7 @@ export function OpenTradesTable({
           <thead>
             <tr>
               <th>ID</th>
+              <th>Symbol</th>
               <th>Chiến lược</th>
               <th>Hướng</th>
               <th>Trạng thái</th>
@@ -36,6 +37,7 @@ export function OpenTradesTable({
             {trades.map((t) => (
               <tr key={t.id} className="clickable" onClick={() => onSelect?.(t.id)}>
                 <td>#{t.id}</td>
+                <td>{t.symbol}</td>
                 <td>{t.strategy}</td>
                 <td>{t.direction}</td>
                 <td>{t.status}</td>
@@ -49,7 +51,7 @@ export function OpenTradesTable({
             ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan={10} className="muted">
+                <td colSpan={11} className="muted">
                   Chưa có lệnh nào.
                 </td>
               </tr>

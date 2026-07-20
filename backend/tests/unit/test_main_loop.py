@@ -197,7 +197,7 @@ def test_full_main_loop_produces_done_and_pending_order(base_ctx):
 def test_full_main_loop_account_risk_blocks_when_trade_open(base_ctx):
     from bot.strategies.base import BreakoutState
 
-    ctx = replace(base_ctx, open_trades_count=1)
+    ctx = replace(base_ctx, open_trades_count=1, symbol_open_trade=True)
     result = main_loop.decide(ctx, BreakoutState.initial(), ctx.config)
     assert result.bundle.outcome.reason == "max_concurrent_trades_reached"
     assert result.bundle.outcome.stage == "one_trade_per_symbol"

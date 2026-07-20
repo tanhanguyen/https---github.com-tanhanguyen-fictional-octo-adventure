@@ -5,13 +5,18 @@ import { usePolling } from '../hooks/usePolling'
 
 export function TradesPage() {
   const [statusFilter, setStatusFilter] = useState<string>('')
+  const [symbolFilter, setSymbolFilter] = useState<string>('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
+  const { data: config } = usePolling(() => api.getConfig(), 60_000, true)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const symbols: string[] = (config?.config.symbols ?? []).map((s: any) => s.symbol)
+
   const { data: trades } = usePolling(
-    () => api.listTrades(statusFilter || undefined),
+    () => api.listTrades(statusFilter || undefined, symbolFilter || undefined),
     2000,
     true,
-    [statusFilter],
+    [statusFilter, symbolFilter],
   )
   const { data: detail } = usePolling(
     () => (selectedId ? api.getTrade(selectedId) : Promise.resolve(null)),
@@ -33,6 +38,22 @@ export function TradesPage() {
           </button>
         ))}
       </div>
+      {symbols.length > 1 && (
+        <div className="toolbar">
+          <button className={symbolFilter === '' ? 'primary' : ''} onClick={() => setSymbolFilter('')}>
+            ALL symbols
+          </button>
+          {symbols.map((s) => (
+            <button
+              key={s}
+              className={symbolFilter === s ? 'primary' : ''}
+              onClick={() => setSymbolFilter(s)}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
       <OpenTradesTable trades={trades ?? []} onSelect={setSelectedId} />
 
       {detail && (

@@ -356,7 +356,7 @@ def test_account_risk_daily_loss_limit(base_ctx):
 
 
 def test_account_risk_one_trade_per_symbol(base_ctx):
-    ctx = replace(base_ctx, open_trades_count=1)
+    ctx = replace(base_ctx, open_trades_count=1, symbol_open_trade=True)
     r = account_risk.evaluate(ctx)
     assert not r.passed and r.blocking
     assert r.values["reason"] == "max_concurrent_trades_reached"

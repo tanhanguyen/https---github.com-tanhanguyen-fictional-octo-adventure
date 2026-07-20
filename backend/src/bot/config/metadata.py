@@ -27,6 +27,14 @@ class FieldMeta:
 
 FILTER_METADATA: list[FieldMeta] = [
     FieldMeta(
+        "symbols",
+        "Danh sách symbol (portfolio / whitelist)",
+        "portfolio",
+        0,
+        None,
+        spec_ref="plan 04",
+    ),
+    FieldMeta(
         "filters.trend",
         "Xu hướng chính (EMA34/89)",
         "regime",

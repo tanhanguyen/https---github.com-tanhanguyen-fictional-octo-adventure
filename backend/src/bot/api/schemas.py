@@ -17,6 +17,7 @@ class AccountOut(BaseModel):
     balance: float
     drawdown_pct: float
     open_trades: int
+    open_trades_by_symbol: dict[str, int] = {}
     current_risk_pct: float
     daily_loss_count: int
     daily_losses_remaining: int
@@ -26,6 +27,8 @@ class AccountOut(BaseModel):
     risk_multiplier: float
     bot_enabled: bool
     blocked_reason: str | None
+    open_risk_pct_total: float = 0.0
+    max_total_open_risk_pct: float | None = None
 
 
 class ConfigVersionOut(BaseModel):
@@ -116,6 +119,7 @@ class DecisionOut(BaseModel):
     strategy: str | None
     direction: str | None
     trade_id: int | None
+    symbol: str | None = None
 
 
 class DecisionFilterOut(BaseModel):
@@ -183,6 +187,7 @@ class RunOut(BaseModel):
     dataset_id: str
     config_version_id: int
     symbol: str
+    symbols: list[str] = []
     status: str
     starting_equity: float
     created_at_utc: str
@@ -289,6 +294,7 @@ class BarOut(BaseModel):
 
 class RunStepOut(BaseModel):
     bar_ts: str
+    symbol: str = ""
     reason: str
     stage: str
     trade_event_types: list[str]

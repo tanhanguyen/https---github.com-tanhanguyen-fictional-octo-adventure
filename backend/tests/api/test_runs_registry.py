@@ -11,7 +11,7 @@ def _make_run(client: TestClient, seed: int, bars: int, steps: int) -> int:
     assert resp.status_code == 200
     run_id: int = resp.json()["id"]
     for _ in range(steps):
-        if client.post("/api/run/step").json()["exhausted"]:
+        if client.post("/api/run/step").json()[0]["exhausted"]:
             break
     return run_id
 

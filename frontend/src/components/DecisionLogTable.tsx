@@ -17,6 +17,7 @@ export function DecisionLogTable({
           <thead>
             <tr>
               <th>Bar</th>
+              <th>Symbol</th>
               <th>Reason</th>
               <th>Stage</th>
               <th>Strategy</th>
@@ -33,6 +34,7 @@ export function DecisionLogTable({
                 onClick={() => onSelect(d.id)}
               >
                 <td>{d.bar_ts_utc}</td>
+                <td>{d.symbol ?? '—'}</td>
                 <td>
                   <span className={`pill ${d.reason === 'done' ? 'pass' : 'na'}`}>
                     {d.reason}
@@ -46,7 +48,7 @@ export function DecisionLogTable({
             ))}
             {decisions.length === 0 && (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   Chưa có decision nào.
                 </td>
               </tr>

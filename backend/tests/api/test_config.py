@@ -38,7 +38,7 @@ def test_config_schema(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert "json_schema" in body
-    assert len(body["metadata"]) == 16
+    assert len(body["metadata"]) == 17  # 16 filters + `symbols` (plan 04)
 
 
 def test_activate_config_version_rollback(client: TestClient) -> None:

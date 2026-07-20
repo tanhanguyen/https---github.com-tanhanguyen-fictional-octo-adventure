@@ -4,6 +4,7 @@ export interface AccountOut {
   balance: number
   drawdown_pct: number
   open_trades: number
+  open_trades_by_symbol: Record<string, number>
   current_risk_pct: number
   daily_loss_count: number
   daily_losses_remaining: number
@@ -13,6 +14,8 @@ export interface AccountOut {
   risk_multiplier: number
   bot_enabled: boolean
   blocked_reason: string | null
+  open_risk_pct_total: number
+  max_total_open_risk_pct: number | null
 }
 
 export interface ConfigOut {
@@ -116,6 +119,7 @@ export interface DecisionOut {
   strategy: string | null
   direction: string | null
   trade_id: number | null
+  symbol: string | null
 }
 
 export interface DecisionFilterOut {
@@ -171,6 +175,7 @@ export interface RunOut {
   dataset_id: string
   config_version_id: number
   symbol: string
+  symbols: string[]
   status: string
   starting_equity: number
   created_at_utc: string
@@ -271,6 +276,7 @@ export interface BarOut {
 
 export interface RunStepOut {
   bar_ts: string
+  symbol: string
   reason: string
   stage: string
   trade_event_types: string[]

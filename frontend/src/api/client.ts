@@ -45,14 +45,15 @@ export const api = {
 
   listFilters: () => http.get<FilterRowOut[]>('/filters').then((r) => r.data),
 
-  listTrades: (status?: string) =>
+  listTrades: (status?: string, symbol?: string) =>
     http
-      .get<TradeOut[]>('/trades', { params: status ? { status } : {} })
+      .get<TradeOut[]>('/trades', { params: { ...(status ? { status } : {}), ...(symbol ? { symbol } : {}) } })
       .then((r) => r.data),
   getTrade: (id: number) => http.get<TradeDetailOut>(`/trades/${id}`).then((r) => r.data),
 
-  listDecisions: (params: { limit?: number; reason?: string; outcome?: string } = {}) =>
-    http.get<DecisionOut[]>('/decisions', { params }).then((r) => r.data),
+  listDecisions: (
+    params: { limit?: number; reason?: string; outcome?: string; symbol?: string } = {},
+  ) => http.get<DecisionOut[]>('/decisions', { params }).then((r) => r.data),
   getDecision: (id: number) =>
     http.get<DecisionDetailOut>(`/decisions/${id}`).then((r) => r.data),
   getDecisionStats: () => http.get<DecisionStatsOut>('/decisions/stats').then((r) => r.data),
@@ -74,7 +75,7 @@ export const api = {
     http
       .post<RunOut>('/run', { seed, bars, dataset_id: datasetId ?? null })
       .then((r) => r.data),
-  step: () => http.post<RunStepOut>('/run/step').then((r) => r.data),
+  step: () => http.post<RunStepOut[]>('/run/step').then((r) => r.data),
 
   listRuns: () => http.get<RunSummaryOut[]>('/runs').then((r) => r.data),
   getRunReport: (id: number) =>

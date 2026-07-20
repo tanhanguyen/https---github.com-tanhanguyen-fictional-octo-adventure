@@ -16,7 +16,7 @@ def _fresh_conn(tmp_path):
 def _make_run(conn):
     repo.upsert_dataset(conn, "ds1", "{}")
     cv_id = repo.create_config_version(conn, "{}", note="test")
-    run_id = repo.create_run(conn, "ds1", cv_id, "EURUSD", 10_000.0)
+    run_id = repo.create_run(conn, cv_id, {"EURUSD": "ds1"}, 10_000.0)
     return run_id
 
 
@@ -110,3 +110,51 @@ def test_counters_consistent_after_closed_trades(tmp_path):
     # consecutive_losses scanning DESC: LOSS,LOSS -> stop at WIN => 2
     assert repo.consecutive_losses(conn, run_id) == 2
     assert repo.consecutive_wins(conn, run_id) == 0
+
+
+def test_counters_consistent_multi_symbol_portfolio(tmp_path):
+    """Plan 04: daily_loss_count/consecutive_* and account_state.open_trades must stay
+    portfolio-wide (aggregated across every symbol in the run), not per-symbol."""
+    conn = _fresh_conn(tmp_path)
+    repo.upsert_dataset(conn, "ds-eur", "{}")
+    repo.upsert_dataset(conn, "ds-gbp", "{}")
+    cv_id = repo.create_config_version(conn, "{}", note="test")
+    run_id = repo.create_run(conn, cv_id, {"EURUSD": "ds-eur", "GBPUSD": "ds-gbp"}, 10_000.0)
+
+    trading_day = "2024-01-02"
+    # A LOSS on EURUSD, then a LOSS on GBPUSD -- the derived counters must combine both,
+    # since account risk (daily-loss-limit, consecutive-loss streaks) is account-wide.
+    for symbol, result in [("EURUSD", "LOSS"), ("GBPUSD", "LOSS")]:
+        repo.insert_trade(
+            conn,
+            repo.TradeRecord(
+                run_id=run_id,
+                symbol=symbol,
+                strategy="BREAKOUT",
+                direction="BUY",
+                status="CLOSED",
+                result=result,
+                trading_day=trading_day,
+                closed_at_utc=f"2024-01-02T{10 if symbol == 'EURUSD' else 11:02d}:00:00+00:00",
+                pnl_amount=-1.0,
+                pnl_r=-1.0,
+            ),
+        )
+
+    assert repo.daily_loss_count(conn, run_id, trading_day) == 2
+    assert repo.consecutive_losses(conn, run_id) == 2
+
+    # Open one PENDING trade per symbol -- `open_trades` in the account_state cache must
+    # equal a live COUNT(*) across BOTH symbols, not per-symbol.
+    for symbol in ("EURUSD", "GBPUSD"):
+        repo.insert_trade(
+            conn,
+            repo.TradeRecord(
+                run_id=run_id, symbol=symbol, strategy="BREAKOUT", direction="BUY", status="PENDING"
+            ),
+        )
+    live_open_count = repo.count_open_trades(conn, run_id)
+    assert live_open_count == 2
+    repo.update_account_state(conn, run_id, open_trades=live_open_count)
+    cache = repo.get_account_state(conn, run_id)
+    assert cache["open_trades"] == 2 == live_open_count

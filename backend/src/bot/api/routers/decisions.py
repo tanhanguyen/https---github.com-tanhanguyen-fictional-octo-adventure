@@ -28,6 +28,7 @@ def _row_to_decision(row: sqlite3.Row) -> DecisionOut:
         strategy=row["strategy"],
         direction=row["direction"],
         trade_id=row["trade_id"],
+        symbol=row["symbol"] if "symbol" in row.keys() else None,
     )
 
 
@@ -36,9 +37,12 @@ def list_decisions(
     limit: int = 50,
     reason: str | None = None,
     outcome: str | None = None,
+    symbol: str | None = None,
     service: RunnerService = Depends(get_runner_service),
 ) -> list[DecisionOut]:
-    return [_row_to_decision(r) for r in service.list_decisions(limit, reason, outcome)]
+    return [
+        _row_to_decision(r) for r in service.list_decisions(limit, reason, outcome, symbol=symbol)
+    ]
 
 
 @router.get("/decisions/stats", response_model=DecisionStatsOut)

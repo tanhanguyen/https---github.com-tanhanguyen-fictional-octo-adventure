@@ -33,7 +33,7 @@ def evaluate(ctx: FilterContext) -> FilterResult:
             detail="daily_loss_limit_reached",
         )
 
-    if cfg.one_trade_per_symbol and ctx.open_trades_count >= 1:
+    if cfg.one_trade_per_symbol and ctx.symbol_open_trade:
         return FilterResult(
             id=FILTER_ID,
             kind=FilterKind.GATE,
@@ -64,6 +64,27 @@ def evaluate(ctx: FilterContext) -> FilterResult:
                 "stage": "account_risk",
             },
             detail="max_concurrent_trades_reached",
+        )
+
+    # Plan 04, user decision 2026-07-18 đợt 3: optional account-wide risk cap, default
+    # off (None) so single-symbol/default-config behavior (and its golden hash) is
+    # unaffected. Same reason vocabulary (§8), new stage.
+    cap = ctx.config.risk.max_total_open_risk_pct
+    if cap is not None and ctx.open_risk_pct_total >= cap:
+        return FilterResult(
+            id=FILTER_ID,
+            kind=FilterKind.GATE,
+            enabled=True,
+            evaluated=True,
+            passed=False,
+            blocking=True,
+            values={
+                "open_risk_pct_total": ctx.open_risk_pct_total,
+                "max_total_open_risk_pct": cap,
+                "reason": "max_concurrent_trades_reached",
+                "stage": "total_risk_cap",
+            },
+            detail="total_risk_cap blocking (open_risk_pct_total >= max_total_open_risk_pct)",
         )
 
     return FilterResult(

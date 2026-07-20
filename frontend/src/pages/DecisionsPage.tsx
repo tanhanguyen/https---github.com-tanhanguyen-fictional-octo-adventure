@@ -6,8 +6,18 @@ import { usePolling } from '../hooks/usePolling'
 
 export function DecisionsPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [symbolFilter, setSymbolFilter] = useState<string>('')
 
-  const { data: decisions } = usePolling(() => api.listDecisions({ limit: 100 }), 2000, true)
+  const { data: config } = usePolling(() => api.getConfig(), 60_000, true)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const symbols: string[] = (config?.config.symbols ?? []).map((s: any) => s.symbol)
+
+  const { data: decisions } = usePolling(
+    () => api.listDecisions({ limit: 100, symbol: symbolFilter || undefined }),
+    2000,
+    true,
+    [symbolFilter],
+  )
   const { data: stats } = usePolling(() => api.getDecisionStats(), 2000, true)
   const { data: detail } = usePolling(
     () => (selectedId ? api.getDecision(selectedId) : Promise.resolve(null)),
@@ -18,6 +28,22 @@ export function DecisionsPage() {
 
   return (
     <div className="grid" style={{ gap: 16 }}>
+      {symbols.length > 1 && (
+        <div className="toolbar">
+          <button className={symbolFilter === '' ? 'primary' : ''} onClick={() => setSymbolFilter('')}>
+            ALL
+          </button>
+          {symbols.map((s) => (
+            <button
+              key={s}
+              className={symbolFilter === s ? 'primary' : ''}
+              onClick={() => setSymbolFilter(s)}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="card">
         <h2>Vì sao không có lệnh? (histogram)</h2>
         <div className="table-scroll">

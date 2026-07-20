@@ -16,10 +16,10 @@ def test_full_run_flow(client: TestClient) -> None:
     for _ in range(200):
         step_resp = client.post("/api/run/step")
         assert step_resp.status_code == 200
-        summary = step_resp.json()
-        if summary["exhausted"]:
+        summaries = step_resp.json()
+        if summaries[0]["exhausted"]:
             break
-        equities.append(summary["equity"])
+        equities.extend(s["equity"] for s in summaries)
     assert len(equities) > 0
 
     account = client.get("/api/account").json()

@@ -36,9 +36,11 @@ def _row_to_trade(row: sqlite3.Row) -> TradeOut:
 
 @router.get("/trades", response_model=list[TradeOut])
 def list_trades(
-    status: str | None = None, service: RunnerService = Depends(get_runner_service)
+    status: str | None = None,
+    symbol: str | None = None,
+    service: RunnerService = Depends(get_runner_service),
 ) -> list[TradeOut]:
-    return [_row_to_trade(r) for r in service.list_trades(status)]
+    return [_row_to_trade(r) for r in service.list_trades(status, symbol=symbol)]
 
 
 @router.get("/trades/{trade_id}", response_model=TradeDetailOut)

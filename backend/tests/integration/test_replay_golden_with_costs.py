@@ -5,45 +5,41 @@ is untouched, so its pinned hash is unaffected by this plan."""
 
 from __future__ import annotations
 
-from bot.cli import _build_instrument
 from bot.config.loader import load_default_config, load_instruments
 from bot.core.clock import Clock
-from bot.data.dataset import DatasetSpec, generate_bundle
-from bot.data.feed import Feed
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
+from bot.engine.portfolio import build_portfolio_from_synthetic
 from bot.engine.runner import Runner
 from tests.integration.test_replay_golden import BARS, _run_once
 
 
-def _run_once_with_costs(seed: int) -> tuple[list[tuple[str, str, str]], float]:
+def _run_once_with_costs(seed: int) -> tuple[list[tuple[str, str, str, str]], float]:
     config = load_default_config()
     config.execution.costs.spread_pips = 1.0
     config.execution.costs.slippage_pips = 0.5
     config.execution.costs.commission_per_lot = 2.0
-    instrument = _build_instrument(config, load_instruments())
-
-    dataset_spec = DatasetSpec(seed=seed, n_candles_15m=(BARS + 400) * 4, symbol=config.symbol)
-    bundle = generate_bundle(dataset_spec)
-    price_feed = Feed(frames=bundle["price"])
-    dxy_feed = Feed(frames=bundle["dxy"])
+    portfolio = build_portfolio_from_synthetic(
+        config, load_instruments(), seed, (BARS + 400) * 4
+    )
 
     conn = connect_and_migrate(":memory:")
-    repo.upsert_dataset(conn, "golden-costs", "{}")
+    symbol_datasets = {sym: f"golden-costs:{sym}" for sym in portfolio.symbols}
+    for did in symbol_datasets.values():
+        repo.upsert_dataset(conn, did, "{}")
     cv_id = repo.create_config_version(conn, config.model_dump_json())
-    run_id = repo.create_run(conn, "golden-costs", cv_id, config.symbol, config.starting_equity)
+    run_id = repo.create_run(conn, cv_id, symbol_datasets, config.starting_equity)
 
-    primary = config.timeframe
-    first_ts = price_feed.frames[primary].index[0].to_pydatetime()
-    clock = Clock(first_ts)
-    runner = Runner(conn, run_id, price_feed, dxy_feed, config, instrument, clock)
+    clock = Clock(min(sc.cursor for sc in portfolio.symbols.values()))
+    runner = Runner(conn, run_id, portfolio.symbols, portfolio.dxy_feed, config, clock)
 
-    stream = []
+    stream: list[tuple[str, str, str, str]] = []
     for _ in range(BARS):
-        summary = runner.step()
-        if summary is None:
+        summaries = runner.step()
+        if not summaries:
             break
-        stream.append((summary.bar_ts, summary.reason, summary.stage))
+        for summary in summaries:
+            stream.append((summary.bar_ts, summary.symbol, summary.reason, summary.stage))
 
     conn.close()
     return stream, runner.equity

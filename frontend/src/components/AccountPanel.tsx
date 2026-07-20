@@ -26,6 +26,34 @@ export function AccountPanel({ account }: { account: AccountOut | null }) {
         <span className="label">Lệnh đang mở</span>
         <span className="value">{account.open_trades}</span>
       </div>
+      {Object.keys(account.open_trades_by_symbol).length > 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Lệnh mở</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(account.open_trades_by_symbol).map(([sym, n]) => (
+                <tr key={sym}>
+                  <td>{sym}</td>
+                  <td>{n}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {account.max_total_open_risk_pct != null && (
+        <div className="stat-row">
+          <span className="label">Tổng risk đang mở</span>
+          <span className="value">
+            {account.open_risk_pct_total.toFixed(2)}% / {account.max_total_open_risk_pct.toFixed(2)}%
+          </span>
+        </div>
+      )}
       <div className="stat-row">
         <span className="label">Thua liên tiếp</span>
         <span className="value">{account.consecutive_losses}</span>

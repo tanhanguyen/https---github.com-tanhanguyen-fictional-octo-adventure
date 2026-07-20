@@ -15,20 +15,17 @@ from typing import Any
 
 from bot.analytics.metrics import RunReport, compute_run_report
 from bot.config.loader import load_default_config, load_instruments
-from bot.config.models import BotConfig
+from bot.config.models import BotConfig, effective_config_for_symbol
 from bot.core.clock import Clock
 from bot.core.errors import ConfigError
 from bot.core.timeframes import tf_rank
 from bot.core.types import InstrumentSpec
-from bot.data.dataset import (
-    DatasetSpec,
-    generate_bundle,
-    import_csv_dataset,
-    load_bundle_for_dataset,
-)
+from bot.data.dataset import import_csv_dataset, load_bundle_for_dataset
 from bot.data.feed import Feed
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
+from bot.engine.context import SymbolContext, build_symbol_context
+from bot.engine.portfolio import build_portfolio_from_synthetic
 from bot.engine.runner import Runner
 from bot.filters.registry import ALL_FILTER_IDS
 
@@ -40,8 +37,8 @@ def _default_db_path() -> str:
     return str(data_dir / "runtime.db")
 
 
-def _build_instrument(config: BotConfig, instruments_yaml: dict[str, Any]) -> InstrumentSpec:
-    spec = instruments_yaml[config.symbol]
+def _build_instrument(symbol: str, instruments_yaml: dict[str, Any]) -> InstrumentSpec:
+    spec = instruments_yaml[symbol]
     return InstrumentSpec(
         symbol=spec["symbol"],
         contract_size=spec["contract_size"],
@@ -55,7 +52,7 @@ def _build_instrument(config: BotConfig, instruments_yaml: dict[str, Any]) -> In
 
 @dataclass
 class _RunResult:
-    stream: list[tuple[str, str, str]]
+    stream: list[tuple[str, str, str, str]]  # (bar_ts, symbol, reason, stage)
     decision_hash: str
     order_count: int
     final_equity: float
@@ -67,32 +64,34 @@ class _RunResult:
 def _run(
     conn_tag: str,
     config: BotConfig,
-    instrument: InstrumentSpec,
-    price_feed: Feed,
+    symbols: dict[str, SymbolContext],
     dxy_feed: Feed | None,
     bars: int,
 ) -> _RunResult:
     conn = connect_and_migrate(":memory:")
-    repo.upsert_dataset(conn, conn_tag, "{}")
+    # One dummy dataset row per symbol, purely to satisfy run_symbol_dataset's FK --
+    # the actual price data lives in each SymbolContext's Feed, not this bookkeeping conn.
+    symbol_datasets = {sym: f"{conn_tag}:{sym}" for sym in symbols}
+    for did in symbol_datasets.values():
+        repo.upsert_dataset(conn, did, "{}")
     cv_id = repo.create_config_version(conn, config.model_dump_json(), note=conn_tag)
-    run_id = repo.create_run(conn, conn_tag, cv_id, config.symbol, config.starting_equity)
+    run_id = repo.create_run(conn, cv_id, symbol_datasets, config.starting_equity)
 
-    primary = config.timeframe
-    first_ts = price_feed.frames[primary].index[0].to_pydatetime()
-    clock = Clock(first_ts)
-    runner = Runner(conn, run_id, price_feed, dxy_feed, config, instrument, clock)
+    clock = Clock(min(sc.cursor for sc in symbols.values()))
+    runner = Runner(conn, run_id, symbols, dxy_feed, config, clock)
 
-    stream: list[tuple[str, str, str]] = []
+    stream: list[tuple[str, str, str, str]] = []
     reason_histogram: Counter[str] = Counter()
     result_histogram: Counter[str] = Counter()
     for _ in range(bars):
-        summary = runner.step()
-        if summary is None:
+        summaries = runner.step()
+        if not summaries:
             break
-        stream.append((summary.bar_ts, summary.reason, summary.stage))
-        reason_histogram[summary.reason] += 1
-        if summary.closed_result is not None:
-            result_histogram[summary.closed_result] += 1
+        for summary in summaries:
+            stream.append((summary.bar_ts, summary.symbol, summary.reason, summary.stage))
+            reason_histogram[summary.reason] += 1
+            if summary.closed_result is not None:
+                result_histogram[summary.closed_result] += 1
 
     order_count = conn.execute(
         "SELECT COUNT(*) FROM trade WHERE run_id=?", (run_id,)
@@ -175,21 +174,10 @@ def _print_report(report: RunReport) -> None:
 
 def cmd_replay(seed: int, bars: int) -> int:
     config = load_default_config()
-    instrument = _build_instrument(config, load_instruments())
-
     n_candles_15m = (bars + 400) * 4
-    dataset_spec = DatasetSpec(
-        seed=seed,
-        n_candles_15m=n_candles_15m,
-        symbol=config.symbol,
-        rollover_tz=config.trading_day_rollover_tz,
-        rollover_time=config.trading_day_rollover_time,
-    )
-    bundle = generate_bundle(dataset_spec)
-    price_feed = Feed(frames=bundle["price"])
-    dxy_feed = Feed(frames=bundle["dxy"])
+    portfolio = build_portfolio_from_synthetic(config, load_instruments(), seed, n_candles_15m)
 
-    result = _run("replay-inmem", config, instrument, price_feed, dxy_feed, bars)
+    result = _run("replay-inmem", config, portfolio.symbols, portfolio.dxy_feed, bars)
 
     print(f"bars processed: {len(result.stream)}")
     print(f"reason histogram: {dict(result.reason_histogram)}")
@@ -216,27 +204,36 @@ def cmd_import_csv(path: str, symbol: str, native_tf: str) -> int:
 
 
 def cmd_replay_dataset(dataset_id: str, bars: int) -> int:
+    # Plan 04 scope limit: `replay --dataset` (real/imported CSV data) stays single-symbol
+    # -- it always replays the FIRST enabled entry in config.symbols. Multi-symbol
+    # portfolios over real CSV data is plan 05/07 territory.
     config = load_default_config()
-    instrument = _build_instrument(config, load_instruments())
+    enabled = [e for e in config.symbols if e.enabled]
+    if not enabled:
+        raise ConfigError("no enabled symbols in config.symbols")
+    entry = enabled[0]
+    eff_cfg = effective_config_for_symbol(config, entry)
+    instrument = _build_instrument(entry.symbol, load_instruments())
 
     store_conn = connect_and_migrate(_default_db_path())
     try:
         row = repo.get_dataset(store_conn, dataset_id)
         if row is None:
             raise ConfigError(f"unknown dataset id {dataset_id!r}")
-        if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(config.timeframe):
+        if row["kind"] == "csv" and tf_rank(row["native_tf"]) > tf_rank(eff_cfg.timeframe):
             raise ConfigError(
                 f"dataset native_tf {row['native_tf']!r} is coarser than "
-                f"config.timeframe {config.timeframe!r} -- pick a finer-or-equal timeframe"
+                f"config.timeframe {eff_cfg.timeframe!r} -- pick a finer-or-equal timeframe"
             )
-        bundle = load_bundle_for_dataset(store_conn, dataset_id, config)
+        bundle = load_bundle_for_dataset(store_conn, dataset_id, eff_cfg)
     finally:
         store_conn.close()
 
     price_feed = Feed(frames=bundle.price)
     dxy_feed = Feed(frames=bundle.dxy) if bundle.dxy is not None else None
+    symbols = {entry.symbol: build_symbol_context(eff_cfg, price_feed, instrument)}
 
-    result = _run(f"replay-dataset-{dataset_id}", config, instrument, price_feed, dxy_feed, bars)
+    result = _run(f"replay-dataset-{dataset_id}", config, symbols, dxy_feed, bars)
 
     print(f"bars processed: {len(result.stream)}")
     print(f"reason histogram: {dict(result.reason_histogram)}")
@@ -277,21 +274,10 @@ _AB_MAY_BE_INERT = {
 
 def cmd_ab(seed: int, bars: int) -> int:
     config = load_default_config()
-    instrument = _build_instrument(config, load_instruments())
-
     n_candles_15m = (bars + 400) * 4
-    dataset_spec = DatasetSpec(
-        seed=seed,
-        n_candles_15m=n_candles_15m,
-        symbol=config.symbol,
-        rollover_tz=config.trading_day_rollover_tz,
-        rollover_time=config.trading_day_rollover_time,
-    )
-    bundle = generate_bundle(dataset_spec)
-    price_feed = Feed(frames=bundle["price"])
-    dxy_feed = Feed(frames=bundle["dxy"])
+    portfolio = build_portfolio_from_synthetic(config, load_instruments(), seed, n_candles_15m)
 
-    baseline = _run("ab-baseline", config, instrument, price_feed, dxy_feed, bars)
+    baseline = _run("ab-baseline", config, portfolio.symbols, portfolio.dxy_feed, bars)
 
     print(f"{'filter':<18}{'hash changed?':<16}{'delta orders':<14}")
     dead: list[str] = []
@@ -301,7 +287,18 @@ def cmd_ab(seed: int, bars: int) -> int:
         variant = config.model_copy(deep=True)
         toggle = getattr(variant.filters, fid)
         toggle.enabled = not toggle.enabled
-        result = _run(f"ab-{fid}", variant, instrument, price_feed, dxy_feed, bars)
+        # Reuse the SAME generated feeds/instruments as baseline (only the effective
+        # config's filter toggle changes) -- avoids regenerating datasets per variant.
+        variant_symbols = {
+            entry.symbol: build_symbol_context(
+                effective_config_for_symbol(variant, entry),
+                portfolio.symbols[entry.symbol].price_feed,
+                portfolio.symbols[entry.symbol].order_engine.instrument,
+            )
+            for entry in variant.symbols
+            if entry.enabled
+        }
+        result = _run(f"ab-{fid}", variant, variant_symbols, portfolio.dxy_feed, bars)
 
         changed = result.decision_hash != baseline.decision_hash
         delta = result.order_count - baseline.order_count

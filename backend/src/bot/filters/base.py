@@ -50,13 +50,20 @@ class FilterContext:
     # Set by main_loop after strategy/signal generation (Phase B needs signal.direction).
     signal: Signal | None = None
 
-    # Account / risk state.
+    # Account / risk state. `open_trades_count` is portfolio-wide (plan 04) -- naturally
+    # 0/1 in the single-symbol case, so single-symbol behavior is unchanged.
     open_trades_count: int = 0
     daily_loss_count: int = 0
     consecutive_wins: int = 0
     consecutive_losses: int = 0
     equity: float = 0.0
     last_trade_result: str | None = None  # "WIN"|"LOSS"|"BREAKEVEN"|None
+    # Plan 04: per-symbol (not portfolio-wide) -- does THIS symbol already have an
+    # open/pending trade.
+    symbol_open_trade: bool = False
+    # Plan 04: sum of risk_pct_effective across all open/pending trades portfolio-wide;
+    # only meaningful when config.risk.max_total_open_risk_pct is set.
+    open_risk_pct_total: float = 0.0
 
     # MTF: pre-fetched, no-lookahead-filtered higher-timeframe closed bars (C11)
     # already resolved by the caller (feed.bars honors C11) as EMA series on the HTF.

@@ -113,28 +113,52 @@ def register_csv_dataset(
 
 def create_run(
     conn: sqlite3.Connection,
-    dataset_id: str,
     config_version_id: int,
-    symbol: str,
+    symbol_datasets: dict[str, str],
     starting_equity: float,
 ) -> int:
+    """`symbol_datasets` maps each symbol in this (portfolio) run to its own dataset id
+    (plan 04). `run.dataset_id`/`run.symbol` stay populated (first symbol alphabetically /
+    comma-joined) for backward-compatible display; `run_symbol_dataset` is the real
+    per-symbol source of truth."""
+    symbols = sorted(symbol_datasets)
+    primary_dataset_id = symbol_datasets[symbols[0]]
     cur = conn.execute(
         "INSERT INTO run(dataset_id, config_version_id, symbol, status, starting_equity, "
-        "created_at_utc) VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'))",
-        (dataset_id, config_version_id, symbol, starting_equity),
+        "created_at_utc, symbols_json) VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'), ?)",
+        (
+            primary_dataset_id,
+            config_version_id,
+            ",".join(symbols),
+            starting_equity,
+            json.dumps(symbols),
+        ),
     )
+    run_id = _lastrowid(cur)
+    for sym in symbols:
+        conn.execute(
+            "INSERT INTO run_symbol_dataset(run_id, symbol, dataset_id) VALUES (?, ?, ?)",
+            (run_id, sym, symbol_datasets[sym]),
+        )
     conn.execute(
         "INSERT INTO account_state(run_id, equity, balance, open_trades, daily_loss_count, "
         "consecutive_wins, consecutive_losses, risk_multiplier, bot_enabled) "
         "VALUES (?, ?, ?, 0, 0, 0, 0, 1.0, 1)",
-        (cur.lastrowid, starting_equity, starting_equity),
+        (run_id, starting_equity, starting_equity),
     )
     conn.execute(
         "INSERT INTO breakout_state(run_id, status, bars_waited) VALUES (?, 'NONE', 0)",
-        (cur.lastrowid,),
+        (run_id,),
     )
     conn.commit()
-    return _lastrowid(cur)
+    return run_id
+
+
+def get_run_symbol_datasets(conn: sqlite3.Connection, run_id: int) -> dict[str, str]:
+    cur = conn.execute(
+        "SELECT symbol, dataset_id FROM run_symbol_dataset WHERE run_id=?", (run_id,)
+    )
+    return {row[0]: row[1] for row in cur.fetchall()}
 
 
 # ---------------------------------------------------------------------------
@@ -280,11 +304,12 @@ def insert_decision(
     strategy: str | None,
     direction: str | None,
     trade_id: int | None,
+    symbol: str,
 ) -> int:
     cur = conn.execute(
         "INSERT INTO decision(run_id, bar_ts_utc, reason, stage, detail, strategy, "
-        "direction, trade_id) VALUES (?,?,?,?,?,?,?,?)",
-        (run_id, bar_ts_utc, reason, stage, detail, strategy, direction, trade_id),
+        "direction, trade_id, symbol) VALUES (?,?,?,?,?,?,?,?,?)",
+        (run_id, bar_ts_utc, reason, stage, detail, strategy, direction, trade_id, symbol),
     )
     conn.commit()
     return _lastrowid(cur)

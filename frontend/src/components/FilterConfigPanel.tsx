@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { api } from '../api/client'
+import { api, errorDetail } from '../api/client'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type JsonSchema = Record<string, any>
 import type { ConfigOut, ConfigSchemaOut } from '../api/types'
@@ -30,6 +30,66 @@ function scalarFields(root: JsonSchema, filterDef: JsonSchema): [string, JsonSch
   })
 }
 
+/** Plan 04: `symbols` has no per-item FieldMeta (it's a nested list of objects) --
+ * schema-driven rendering falls back to a raw JSON editor, validated server-side by
+ * PATCH /api/config (client-side JSON.parse just catches typos early). */
+function SymbolsJsonEditor({ config, onChanged }: { config: ConfigOut; onChanged: () => void }) {
+  const initial = JSON.stringify(config.config.symbols ?? [], null, 2)
+  const [text, setText] = useState(initial)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function save() {
+    setError(null)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch (e) {
+      setError(`JSON không hợp lệ: ${String(e)}`)
+      return
+    }
+    setBusy(true)
+    try {
+      await api.patchConfig({ symbols: parsed })
+      onChanged()
+    } catch (e) {
+      setError(errorDetail(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="filter-row">
+      <div className="filter-name">
+        <span>0. Danh sách symbol (portfolio / whitelist)</span>
+      </div>
+      <div className="filter-params" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+        <textarea
+          rows={10}
+          style={{ fontFamily: 'monospace', width: '100%' }}
+          value={text}
+          disabled={busy}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div className="toolbar">
+          <button disabled={busy} onClick={() => void save()}>
+            Lưu symbols
+          </button>
+          <button disabled={busy} onClick={() => setText(initial)}>
+            Hoàn tác
+          </button>
+        </div>
+        {error && <span style={{ color: 'var(--danger, red)' }}>{error}</span>}
+        <span className="muted">
+          Mỗi entry: symbol, symbol_type, enabled, dataset_seed, overrides (chỉ
+          filters/strategies/timeframe/risk.allow_short/risk.max_risk_per_trade_pct).
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export function FilterConfigPanel({ schema, config, onChanged }: Props) {
   const [pending, setPending] = useState<Record<string, boolean>>({})
   const root = schema.json_schema
@@ -40,7 +100,7 @@ export function FilterConfigPanel({ schema, config, onChanged }: Props) {
   }, [root])
 
   const sortedMeta = useMemo(
-    () => [...schema.metadata].sort((a, b) => a.ordinal - b.ordinal),
+    () => [...schema.metadata].sort((a, b) => a.ordinal - b.ordinal).filter((m) => m.kind),
     [schema.metadata],
   )
 
@@ -62,6 +122,7 @@ export function FilterConfigPanel({ schema, config, onChanged }: Props) {
         frontend.
       </p>
       <div className="filter-group">
+        <SymbolsJsonEditor config={config} onChanged={onChanged} />
         {sortedMeta.map((m) => {
           const id = m.field.replace('filters.', '')
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import pytest
 
-from bot.cli import _AB_EXCLUDED_FILTERS, _AB_MAY_BE_INERT, _build_instrument, _run
+from bot.cli import _AB_EXCLUDED_FILTERS, _AB_MAY_BE_INERT, _run
 from bot.config.loader import load_default_config, load_instruments
-from bot.data.dataset import DatasetSpec, generate_bundle
-from bot.data.feed import Feed
+from bot.config.models import effective_config_for_symbol
+from bot.engine.context import build_symbol_context
+from bot.engine.portfolio import build_portfolio_from_synthetic
 from bot.filters.registry import ALL_FILTER_IDS
 
 pytestmark = pytest.mark.slow
@@ -27,24 +28,14 @@ _MUST_CHANGE = {"session", "adx_filter", "er_filter", "trend"}
 
 def _setup():
     config = load_default_config()
-    instrument = _build_instrument(config, load_instruments())
     n_candles_15m = (BARS + 400) * 4
-    dataset_spec = DatasetSpec(
-        seed=SEED,
-        n_candles_15m=n_candles_15m,
-        symbol=config.symbol,
-        rollover_tz=config.trading_day_rollover_tz,
-        rollover_time=config.trading_day_rollover_time,
-    )
-    bundle = generate_bundle(dataset_spec)
-    price_feed = Feed(frames=bundle["price"])
-    dxy_feed = Feed(frames=bundle["dxy"])
-    return config, instrument, price_feed, dxy_feed
+    portfolio = build_portfolio_from_synthetic(config, load_instruments(), SEED, n_candles_15m)
+    return config, portfolio
 
 
 def test_ab_no_unexplained_dead_filters():
-    config, instrument, price_feed, dxy_feed = _setup()
-    baseline = _run("ab-test-baseline", config, instrument, price_feed, dxy_feed, BARS)
+    config, portfolio = _setup()
+    baseline = _run("ab-test-baseline", config, portfolio.symbols, portfolio.dxy_feed, BARS)
 
     must_change_confirmed = set()
     unexplained_dead = []
@@ -54,7 +45,16 @@ def test_ab_no_unexplained_dead_filters():
         variant = config.model_copy(deep=True)
         toggle = getattr(variant.filters, fid)
         toggle.enabled = not toggle.enabled
-        result = _run(f"ab-test-{fid}", variant, instrument, price_feed, dxy_feed, BARS)
+        variant_symbols = {
+            entry.symbol: build_symbol_context(
+                effective_config_for_symbol(variant, entry),
+                portfolio.symbols[entry.symbol].price_feed,
+                portfolio.symbols[entry.symbol].order_engine.instrument,
+            )
+            for entry in variant.symbols
+            if entry.enabled
+        }
+        result = _run(f"ab-test-{fid}", variant, variant_symbols, portfolio.dxy_feed, BARS)
 
         changed = result.decision_hash != baseline.decision_hash
         if changed and fid in _MUST_CHANGE:
