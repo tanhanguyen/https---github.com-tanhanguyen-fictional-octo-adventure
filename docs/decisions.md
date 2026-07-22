@@ -107,7 +107,7 @@ Không cross-check ta-lib/pandas-ta: công thức §6 + C8 là chân lý.
 | Chạm `DAILY_MAX_LOSSES` | Chỉ chặn lệnh mới; lệnh mở vẫn quản tới SL/TP/time-stop |
 | §6.5 HTF chỉ dùng `EMA34_Close vs EMA89_Close` | Đúng nguyên văn (gate HTF lỏng hơn primary — có vẻ cố ý) |
 | `STARTING_EQUITY`, instrument | 10 000 USD; EURUSD `contract_size 100000, pip 0.0001, pip_value_per_lot 10.0, spread_pips 0.0, min_lot 0.01`. Spread 0 để test tính tay; §10 bắt backtest có phí → bật khi chạy thật |
-| News | `NEWS_BLACKLIST=[]`, filter off; nhận list khoảng UTC nhập tay |
+| News | **Vượt qua bởi plan 06** (mục "Plan 06 — Dữ liệu cho filter `news`" cuối file): dữ liệu thật (`news_event` import từ CSV chuẩn hoá), không còn `blacklist_utc` nhập tay |
 
 ## Quyết định phát sinh trong Phase 2/3 (chưa có ở trên, ghi bổ sung)
 
@@ -179,7 +179,14 @@ kê ở trên.
   slot thiếu trên lưới (anchor tại bar đầu tiên cho 15m/1H/4H; số ngày lịch thiếu cho 1D) và
   ghi vào `dataset.gap_count` — thông tin hiển thị, không chặn import/run. Việc lệch lưới
   (timestamp không phải bội số của tf, hoặc 1D không cùng giờ-phút-giây trong ngày) mới bị từ
-  chối (`FeedError`), vì đó là lỗi dữ liệu chứ không phải gap.
+  chối (`FeedError`), vì đó là lỗi dữ liệu chứ không phải gap. *Sửa 2026-07-20 (review):
+  (a) `load_csv` từng `sort_index()` TRƯỚC khi validate — check "index tăng nghiêm ngặt"
+  không bao giờ bắt được file lộn thứ tự; giờ bỏ sort, file out-of-order bị `FeedError` kèm
+  timestamp dòng vi phạm. (b) Idempotency của `import_csv_dataset` đổi khoá từ `file_sha256`
+  đơn lẻ sang bộ ba `(file_sha256, symbol, native_tf)` (đúng bộ ba tạo dataset id) — cùng
+  file import dưới symbol/tf KHÁC giờ đăng ký dataset mới thay vì âm thầm trả metadata của
+  dataset cũ. (c) `create_run(dataset_id=…)` với config >1 symbol giờ raise `ConfigError`
+  thay vì âm thầm bỏ qua `dataset_id` và sinh synthetic.*
 - **Căn chỉnh thời gian DXY**: theo đúng C11 — giá trị DXY nhìn thấy tại clock `t` luôn là bar
   DXY đã đóng gần nhất tính tới `t` (`Feed.bars()` filter trước `.tail(n)` như giá chính), KHÔNG
   bao giờ forward-fill từ tương lai. Nếu chuỗi DXY thiếu bar tại thời điểm đánh giá, filter
@@ -282,6 +289,14 @@ cùng một mốc clock là **alphabet** (deterministic).
    `risk_manager.calculate_lot` cách ly (pip≠EURUSD sizing, `tests/unit/test_risk_manager.py`)
    — không dùng USDJPY trong bất kỳ multi-symbol integration/golden test hay portfolio mẫu
    nào; các test đó dùng EURUSD/GBPUSD/XAUUSD (đều quote-USD, P&L đúng với engine hiện tại).
+   **Bổ sung 2026-07-20 (review plans 01–06): bất biến sizing↔P&L** — vì sizing dùng
+   `pip_value_per_lot` còn P&L dùng `contract_size`, mọi entry trong `instruments.yaml`
+   PHẢI thoả `pip_value_per_lot == pip × contract_size` (tính bằng USD) chừng nào engine
+   chưa có quy đổi quote-currency. Review bắt được XAUUSD khai `pip_value_per_lot: 1.0`
+   trong khi `pip(0.1) × contract_size(100) = 10.0` → lot bị oversize đúng 10× (lệnh
+   "risk 0.5%" thực tế thua ~5% equity tại SL). Đã sửa thành `10.0`; golden multi-symbol
+   không cần re-pin hằng số (test chỉ so determinism giữa 2 lần chạy) nhưng stream/equity
+   của portfolio chứa XAUUSD đổi là CHỦ ĐÍCH.
 5. **`account_risk` filter thêm nhánh `total_risk_cap`** — khi `risk.max_total_open_risk_pct`
    được set (mặc định `None` = tắt, không đổi hành vi/hash), tổng `risk_pct_effective` của
    mọi lệnh mở/pending vượt ngưỡng → `reason=max_concurrent_trades_reached`,
@@ -297,5 +312,60 @@ cùng một mốc clock là **alphabet** (deterministic).
 
 Kiểm chứng: `python -m bot.cli replay --seed 42 --bars 600` (1-symbol, auto-migrated) chạy 2
 lần cho `decision_stream_hash` ổn định; portfolio 3-symbol (EURUSD/GBPUSD/XAUUSD) qua API tạo
-ra cả 2 stage `account_risk`/`max_concurrent_trades` và `one_trade_per_symbol` trong decision
-histogram (xem `tests/unit/test_account_risk_portfolio.py`).
+ra cả 2 stage `max_concurrent_trades` và `one_trade_per_symbol` trong decision histogram
+(xem `tests/unit/test_account_risk_portfolio.py`). *Sửa 2026-07-20: nhánh chặn theo tổng
+portfolio ban đầu emit `stage="account_risk"` — đã đổi thành `stage="max_concurrent_trades"`
+đúng từ vựng plan 04 (nhánh daily-loss-limit vẫn giữ `stage="account_risk"`, plan không đặt
+tên riêng cho nó).*
+
+## Plan 06 — Dữ liệu cho filter `news` (blackout windows) (2026-07-20)
+
+Thay `filters.news.blacklist_utc` (list khoảng UTC nhập tay) bằng dữ liệu sự kiện thật, import
+từ file lịch kinh tế đã export (user tự tải, KHÔNG scrape/gọi API — đúng ràng buộc plan).
+
+1. **Format chuẩn nội bộ**: bảng `news_event(id, ts_utc, currency, impact, title,
+   source_file_sha256, created_at_utc)`, migration `004_news_events.sql`. Dedupe **tại insert**
+   bằng unique index `(ts_utc, currency, title)` — import lại cùng file/khoảng thời gian là
+   no-op (`INSERT OR IGNORE`, đếm `inserted_count`/`duplicate_count`). Bảng append-only, không
+   bao giờ UPDATE/DELETE một dòng đã insert.
+2. **`scripts/convert_news.py`**: đổi file export ForexFactory (cột `Date,Time,Currency,
+   Impact,Event`, giờ theo `--tz` — mặc định `America/New_York`, đúng default của
+   ForexFactory) sang CSV chuẩn `ts_utc,currency,impact,title` (ts ISO-8601 UTC). Bỏ dòng
+   `Impact=Holiday` (không phải sự kiện có thể trade quanh). Cùng pattern với
+   `scripts/convert_csv.py` (plan 02).
+3. **Import**: `python -m bot.cli import-news --path <file chuẩn>` + `POST /api/news/import
+   {path}` (`bot.data.news.import_news_csv`) — validate cột bắt buộc, `ts_utc` phải
+   timezone-aware ISO-8601, `impact` phải thuộc `low|medium|high`.
+4. **`filters.news`**: `enabled` (mặc định `false`, giữ golden hash không đổi), `min_impact`
+   (`low|medium|high`, mặc định `high`), `window_before_min`/`window_after_min` (mặc định
+   30/30 phút). **`currencies` KHÔNG nằm trong config filter** — lấy từ `InstrumentSpec.
+   currencies` (field mới, `config/instruments.yaml` mỗi symbol khai một lần, ví dụ
+   EURUSD → `[EUR, USD]`) đúng yêu cầu "không hardcode trong filter, đặt trong
+   instrument/profile". Ngữ nghĩa chặn: tồn tại event `impact` ≥ `min_impact`, `currency`
+   giao với `currencies` của symbol, và `now ∈ [event.ts − window_before_min,
+   event.ts + window_after_min]` → `passed=False`, `blocking=True`.
+5. **Reason/stage**: giữ đúng vựng §8 (`reason="wait"`, bất biến #4) — `stage` tách riêng
+   thành `news_blackout` (trước đây gộp chung với `session` theo ghi chú Gap cũ; nay `news` đã
+   luôn là filter/decision-log nhánh riêng, chỉ đổi TÊN stage từ `"news"` → `"news_blackout"`
+   cho rõ nghĩa trên UI/API).
+6. **Nạp vào `Context` — snapshot per-run (Determinism, bất biến #1)**: `Runner.__init__` đọc
+   `run.news_snapshot_max_id` (cột mới, set bởi `repo.create_run` = `MAX(news_event.id)` tại
+   thời điểm tạo run) rồi load TOÀN BỘ event có `id ≤ snapshot` một lần (`bot.data.news.
+   load_news_events_index`) thành `NewsEventsIndex` (list sort theo `ts_utc`, tra cứu
+   O(log n + k) bằng `bisect` — pure, không I/O, sống trong `bot.core.types` để `FilterContext`
+   giữ được bất biến #6 "filter thuần, không I/O"; chỉ `bot.data.news` — nơi Runner gọi — mới
+   chạm DB/file). Vì `news_event` append-only và mỗi run tự chốt `news_snapshot_max_id` lúc
+   tạo, import file mới **không bao giờ đổi** decision stream của run đã tồn tại — chỉ run mới
+   tạo SAU import mới thấy event đó. Test: `tests/integration/test_news_import.py`.
+7. **UI**: `filters.news` render tự động qua `/api/config/schema` (bất biến #9, không sửa tay
+   form) — nhưng phát hiện khi review: `FilterConfigPanel.tsx` trước đây KHÔNG render field
+   kiểu `string`/`enum` (chỉ có nhánh `boolean`/`number`) vì trước plan 06 chưa filter nào có
+   tham số dạng chuỗi — `min_impact` (Literal) sẽ bị silently drop khỏi form. Đã thêm nhánh
+   `type === 'string'` (dropdown nếu có `enum`, text input nếu không) — sửa luôn gap này cho
+   mọi filter tương lai, tiện thể làm lộ ra `filters.dxy.dataset_id` (string, có từ plan 02)
+   cũng từng bị ẩn. Thêm card "Lịch tin tức" trên trang Config: form import theo đường dẫn +
+   bảng read-only `GET /api/news?from=&to=` (không giới hạn theo snapshot của run nào — chỉ để
+   xem trước, không ảnh hưởng determinism).
+
+Golden hash không đổi (`filters.news.enabled=false` mặc định) — xác nhận bằng
+`tests/integration/test_replay_golden*.py` chạy lại sau plan này, không cần re-pin.

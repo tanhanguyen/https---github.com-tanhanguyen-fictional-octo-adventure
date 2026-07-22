@@ -10,6 +10,7 @@ instruments:
     min_lot: 0.01
     lot_step: 0.01
     synthetic_start_price: 1.1000
+    currencies: [EUR, USD]
   GBPUSD:
     symbol: GBPUSD
     symbol_type: FOREX
@@ -20,6 +21,7 @@ instruments:
     min_lot: 0.01
     lot_step: 0.01
     synthetic_start_price: 1.2700
+    currencies: [GBP, USD]
   # pip = 0.01 (100x EURUSD) -- the whole reason instrument spec had to move per-symbol
   # (plan 04): using the global EURUSD spec here would size lots ~100x too small.
   # synthetic_start_price must be JPY-scale too (~110), or sl_distance/pip produces a
@@ -34,13 +36,20 @@ instruments:
     min_lot: 0.01
     lot_step: 0.01
     synthetic_start_price: 110.00
+    currencies: [USD, JPY]
+  # Invariant (sizing vs P&L consistency): pip_value_per_lot MUST equal
+  # pip x contract_size in account currency (USD) — risk_manager sizes lots from
+  # pip_value_per_lot but OrderEngine._pnl_amount realizes P&L as move x lot x
+  # contract_size with no conversion. A mismatch skews realized risk by exactly
+  # that ratio (XAUUSD shipped with 1.0 instead of 10.0 -> 10x oversized lots).
   XAUUSD:
     symbol: XAUUSD
     symbol_type: FOREX
     contract_size: 100
     pip: 0.1
-    pip_value_per_lot: 1.0
+    pip_value_per_lot: 10.0  # = pip (0.1) x contract_size (100)
     spread_pips: 0.0
     min_lot: 0.01
     lot_step: 0.01
     synthetic_start_price: 1900.0
+    currencies: [XAU, USD]

@@ -404,10 +404,59 @@ def test_news_off_by_default(base_ctx):
     assert r.enabled is False
 
 
-def test_news_blocks_within_blacklist(base_ctx):
+def _news_ctx(base_ctx, *, currencies=("EUR", "USD"), min_impact="high", before=30, after=30):
+    from bot.core.types import NewsEvent, NewsEventsIndex
+
     cfg2 = base_ctx.config.model_copy(deep=True)
     cfg2.filters.news.enabled = True
-    cfg2.filters.news.blacklist_utc = ["2024-06-03T09:00:00+00:00/2024-06-03T11:00:00+00:00"]
-    ctx = replace(base_ctx, config=cfg2)  # now=10:00 UTC -> inside window
+    cfg2.filters.news.min_impact = min_impact
+    cfg2.filters.news.window_before_min = before
+    cfg2.filters.news.window_after_min = after
+    events = NewsEventsIndex(
+        events=[
+            NewsEvent(
+                ts_utc=datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc),
+                currency="EUR",
+                impact="high",
+                title="ECB rate decision",
+            ),
+            NewsEvent(
+                ts_utc=datetime(2024, 6, 3, 12, 0, tzinfo=timezone.utc),
+                currency="EUR",
+                impact="medium",
+                title="German CPI",
+            ),
+        ]
+    )
+    return replace(
+        base_ctx, config=cfg2, news_events=events, instrument_currencies=currencies
+    )
+
+
+def test_news_blocks_within_window(base_ctx):
+    ctx = replace(_news_ctx(base_ctx), now=datetime(2024, 6, 3, 10, 15, tzinfo=timezone.utc))
     r = news.evaluate(ctx)
     assert not r.passed and r.blocking
+
+
+def test_news_does_not_block_outside_window(base_ctx):
+    # event at 10:00, window 30/30 -> 09:15 is 45 min before, outside the window.
+    ctx = replace(_news_ctx(base_ctx), now=datetime(2024, 6, 3, 9, 15, tzinfo=timezone.utc))
+    r = news.evaluate(ctx)
+    assert r.passed and not r.blocking
+
+
+def test_news_min_impact_ignores_lower_impact_event(base_ctx):
+    # 12:00 event is medium impact; min_impact=high -> not blocking.
+    ctx = replace(_news_ctx(base_ctx), now=datetime(2024, 6, 3, 12, 5, tzinfo=timezone.utc))
+    r = news.evaluate(ctx)
+    assert r.passed and not r.blocking
+
+
+def test_news_unrelated_currency_not_blocked(base_ctx):
+    ctx = replace(
+        _news_ctx(base_ctx, currencies=("JPY",)),
+        now=datetime(2024, 6, 3, 10, 15, tzinfo=timezone.utc),
+    )
+    r = news.evaluate(ctx)
+    assert r.passed and not r.blocking

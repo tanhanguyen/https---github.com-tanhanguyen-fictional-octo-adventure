@@ -43,7 +43,10 @@ def _validate(df: pd.DataFrame, tf: str) -> None:
         dup = df.index[df.index.duplicated()][0]
         raise FeedError(f"duplicate open_ts at {dup.isoformat()}")
     if not df.index.is_monotonic_increasing:
-        raise FeedError("open_ts index must be strictly increasing")
+        bad = next(ts for prev, ts in zip(df.index, df.index[1:], strict=False) if ts < prev)
+        raise FeedError(
+            f"open_ts index must be strictly increasing: out-of-order row at {bad.isoformat()}"
+        )
 
     if df[_REQUIRED_COLUMNS].isna().any().any():
         bad_rows = df.index[df[_REQUIRED_COLUMNS].isna().any(axis=1)]
@@ -70,7 +73,9 @@ def load_csv(
         df.index = df.index.tz_localize("UTC")
     else:
         df.index = df.index.tz_convert("UTC")
-    df = df[_REQUIRED_COLUMNS].sort_index()
+    # No sort_index() here: an out-of-order file is rejected by _validate (plan 02
+    # "index tăng nghiêm ngặt"), not silently reordered.
+    df = df[_REQUIRED_COLUMNS]
     _validate(df, tf)
     return build_all_timeframes(df, rollover_tz, rollover_time, base_tf=tf)
 

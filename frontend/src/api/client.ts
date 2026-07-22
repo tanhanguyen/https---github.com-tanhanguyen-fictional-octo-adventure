@@ -11,6 +11,8 @@ import type {
   DecisionStatsOut,
   EquityPointOut,
   FilterRowOut,
+  NewsEventOut,
+  NewsImportOut,
   RunCompareOut,
   RunOut,
   RunReportOut,
@@ -69,6 +71,11 @@ export const api = {
     http
       .post<DatasetOut>('/datasets/import', { path, symbol, native_tf: nativeTf })
       .then((r) => r.data),
+
+  listNews: (from?: string, to?: string) =>
+    http.get<NewsEventOut[]>('/news', { params: { from, to } }).then((r) => r.data),
+  importNews: (path: string) =>
+    http.post<NewsImportOut>('/news/import', { path }).then((r) => r.data),
 
   getRun: () => http.get<RunOut | null>('/run').then((r) => r.data),
   createRun: (seed: number, bars: number, datasetId?: string) =>

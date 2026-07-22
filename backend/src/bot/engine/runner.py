@@ -30,6 +30,7 @@ from bot.core.clock import Clock
 from bot.core.timeframes import tf_duration, trading_day
 from bot.core.types import OrderStatus
 from bot.data.feed import Feed
+from bot.data.news import load_news_events_index
 from bot.db import repositories as repo
 from bot.engine import decision_log, main_loop
 from bot.engine.context import AccountState, SymbolContext, build_context
@@ -69,6 +70,15 @@ class Runner:
 
         self.balance = config.starting_equity
         self.equity = config.starting_equity
+
+        # Plan 06: news events are loaded ONCE per run, frozen at the snapshot recorded
+        # by repo.create_run -- importing a new file mid-run (or after) never changes
+        # this run's decisions (determinism invariant).
+        row = conn.execute(
+            "SELECT news_snapshot_max_id FROM run WHERE id=?", (run_id,)
+        ).fetchone()
+        news_snapshot_max_id = int(row["news_snapshot_max_id"]) if row is not None else 0
+        self.news_events = load_news_events_index(conn, news_snapshot_max_id)
 
     def _current_trading_day(self, ts: datetime) -> str:
         return trading_day(
@@ -203,7 +213,13 @@ class Runner:
                 open_risk_pct_total=self._portfolio_open_risk_pct_total(),
             )
             ctx = build_context(
-                sc.price_feed, self.dxy_feed, sc.effective_config, self.clock.now, account
+                sc.price_feed,
+                self.dxy_feed,
+                sc.effective_config,
+                self.clock.now,
+                account,
+                news_events=self.news_events,
+                instrument_currencies=sc.currencies,
             )
             ml = main_loop.decide(ctx, sc.breakout_state, sc.effective_config)
             sc.breakout_state = ml.breakout_state

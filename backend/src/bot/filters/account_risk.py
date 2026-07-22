@@ -50,6 +50,8 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         )
 
     if ctx.open_trades_count >= cfg.max_concurrent_trades:
+        # Plan 04 vocabulary: portfolio-wide count block is stage "max_concurrent_trades"
+        # (distinct from stage "one_trade_per_symbol" above, deviation #13).
         return FilterResult(
             id=FILTER_ID,
             kind=FilterKind.GATE,
@@ -61,7 +63,7 @@ def evaluate(ctx: FilterContext) -> FilterResult:
                 "open_trades_count": ctx.open_trades_count,
                 "max_concurrent_trades": cfg.max_concurrent_trades,
                 "reason": "max_concurrent_trades_reached",
-                "stage": "account_risk",
+                "stage": "max_concurrent_trades",
             },
             detail="max_concurrent_trades_reached",
         )

@@ -10,7 +10,7 @@ import pandas as pd
 
 from bot.config.models import BotConfig
 from bot.core.timeframes import higher_tf, tf_duration
-from bot.core.types import InstrumentSpec
+from bot.core.types import InstrumentSpec, NewsEventsIndex
 from bot.data.feed import Feed
 from bot.engine.order_engine import OpenTrade, OrderEngine
 from bot.filters.base import FilterContext
@@ -53,6 +53,8 @@ class SymbolContext:
     time_stop_hours: float
     breakout_state: BreakoutState
     cursor: datetime  # next bar-open to process on this symbol's own timeframe
+    # Plan 06: this symbol's instrument currencies (news filter gate).
+    currencies: tuple[str, ...] = ()
     trade: OpenTrade | None = None
     trade_db_id: int | None = None
 
@@ -83,6 +85,7 @@ def build_symbol_context(
         time_stop_hours=time_stop_hours,
         breakout_state=BreakoutState.initial(),
         cursor=first_ts,
+        currencies=instrument.currencies,
     )
 
 
@@ -93,6 +96,8 @@ def build_context(
     now: datetime,
     account: AccountState,
     lookback: int = LOOKBACK,
+    news_events: NewsEventsIndex | None = None,
+    instrument_currencies: tuple[str, ...] = (),
 ) -> FilterContext:
     primary = config.timeframe
     bars = price_feed.bars(primary, now, lookback)
@@ -168,4 +173,6 @@ def build_context(
         htf_ema_slow_close=htf_slow,
         htf_timeframe=htf,
         dxy_change_1h_pct=dxy_change,
+        news_events=news_events,
+        instrument_currencies=instrument_currencies,
     )

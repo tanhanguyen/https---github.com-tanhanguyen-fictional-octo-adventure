@@ -305,3 +305,22 @@ class RunStepOut(BaseModel):
 
 class PlayIn(BaseModel):
     interval_ms: int = 200
+
+
+class NewsImportIn(BaseModel):
+    path: str
+
+
+class NewsImportOut(BaseModel):
+    file_sha256: str
+    row_count: int
+    inserted_count: int
+    duplicate_count: int
+
+
+class NewsEventOut(BaseModel):
+    id: int
+    ts_utc: str
+    currency: str
+    impact: str
+    title: str

@@ -22,6 +22,7 @@ from bot.core.timeframes import tf_rank
 from bot.core.types import InstrumentSpec
 from bot.data.dataset import import_csv_dataset, load_bundle_for_dataset
 from bot.data.feed import Feed
+from bot.data.news import import_news_csv
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
 from bot.engine.context import SymbolContext, build_symbol_context
@@ -47,6 +48,7 @@ def _build_instrument(symbol: str, instruments_yaml: dict[str, Any]) -> Instrume
         spread_pips=spec["spread_pips"],
         min_lot=spec["min_lot"],
         lot_step=spec["lot_step"],
+        currencies=tuple(spec.get("currencies", ())),
     )
 
 
@@ -203,6 +205,18 @@ def cmd_import_csv(path: str, symbol: str, native_tf: str) -> int:
     return 0
 
 
+def cmd_import_news(path: str) -> int:
+    conn = connect_and_migrate(_default_db_path())
+    try:
+        result = import_news_csv(conn, Path(path))
+    finally:
+        conn.close()
+    print(f"file_sha256: {result.file_sha256}")
+    print(f"rows: {result.row_count}  inserted: {result.inserted_count}"
+          f"  duplicates: {result.duplicate_count}")
+    return 0
+
+
 def cmd_replay_dataset(dataset_id: str, bars: int) -> int:
     # Plan 04 scope limit: `replay --dataset` (real/imported CSV data) stays single-symbol
     # -- it always replays the FIRST enabled entry in config.symbols. Multi-symbol
@@ -333,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
         "--native-tf", type=str, default="15m", choices=["15m", "1H", "4H", "1D"]
     )
 
+    import_news = sub.add_parser(
+        "import-news", help="Import a standardized news-calendar CSV into news_event"
+    )
+    import_news.add_argument("--path", type=str, required=True)
+
     args = parser.parse_args(argv)
     if args.command == "replay":
         if args.dataset is not None:
@@ -342,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_ab(args.seed, args.bars)
     if args.command == "import-csv":
         return cmd_import_csv(args.path, args.symbol, args.native_tf)
+    if args.command == "import-news":
+        return cmd_import_news(args.path)
     return 1
 
 

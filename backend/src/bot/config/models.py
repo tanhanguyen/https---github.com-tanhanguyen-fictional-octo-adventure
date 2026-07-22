@@ -171,7 +171,12 @@ class WickFilterConfig(FilterToggle):
 
 class NewsFilterConfig(FilterToggle):
     enabled: bool = False
-    blacklist_utc: list[str] = Field(default_factory=list)  # ISO ranges "start/end"
+    # Plan 06: real imported events (news_event table) replace the hand-typed
+    # blacklist_utc ranges. `currencies` are NOT configured here -- they come from the
+    # symbol's instrument/profile (instruments.yaml), never hardcoded per plan.
+    min_impact: Literal["low", "medium", "high"] = "high"
+    window_before_min: int = 30
+    window_after_min: int = 30
 
 
 class FiltersConfig(StrictModel):

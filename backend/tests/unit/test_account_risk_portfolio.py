@@ -12,8 +12,8 @@ from bot.filters import account_risk
 def test_max_concurrent_trades_reached_without_symbol_open_trade(base_ctx):
     """Scenario (a) at filter level: portfolio already has MAX_CONCURRENT_TRADES open
     trades (none of them on THIS symbol) -- a 4th symbol's signal must still be blocked,
-    with stage=account_risk/max_concurrent_trades (not one_trade_per_symbol, since this
-    symbol itself has no open trade)."""
+    with stage=max_concurrent_trades (plan 04 vocabulary; not one_trade_per_symbol,
+    since this symbol itself has no open trade)."""
     cfg = base_ctx.config.filters.account_risk
     ctx = replace(
         base_ctx,
@@ -23,7 +23,7 @@ def test_max_concurrent_trades_reached_without_symbol_open_trade(base_ctx):
     r = account_risk.evaluate(ctx)
     assert not r.passed and r.blocking
     assert r.values["reason"] == "max_concurrent_trades_reached"
-    assert r.values["stage"] == "account_risk"
+    assert r.values["stage"] == "max_concurrent_trades"
 
 
 def test_total_risk_cap_blocks_when_set_and_exceeded(base_ctx):

@@ -39,6 +39,18 @@ def test_import_is_idempotent_by_file_content():
     assert rows[0] == 1
 
 
+def test_same_file_different_symbol_registers_new_dataset():
+    """Idempotency is keyed by (file sha, symbol, native_tf) — the same bytes imported
+    under another symbol must NOT return the first dataset's metadata."""
+    conn = connect_and_migrate(":memory:")
+    r1 = import_csv_dataset(conn, FIXTURE, "EURUSD", "15m")
+    r2 = import_csv_dataset(conn, FIXTURE, "GBPUSD", "15m")
+    assert r1.dataset_id != r2.dataset_id
+    assert r2.symbol == "GBPUSD"
+    rows = conn.execute("SELECT COUNT(*) FROM dataset WHERE kind='csv'").fetchone()
+    assert rows[0] == 2
+
+
 def test_registered_metadata_matches_fixture():
     conn = connect_and_migrate(":memory:")
     result = import_csv_dataset(conn, FIXTURE, "EURUSD", "15m")

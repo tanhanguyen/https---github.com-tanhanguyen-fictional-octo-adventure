@@ -154,6 +154,21 @@ export interface SymbolOut {
   symbol_type: string
 }
 
+export interface NewsEventOut {
+  id: number
+  ts_utc: string
+  currency: string
+  impact: string
+  title: string
+}
+
+export interface NewsImportOut {
+  file_sha256: string
+  row_count: number
+  inserted_count: number
+  duplicate_count: number
+}
+
 export interface DatasetOut {
   id: string
   kind: string

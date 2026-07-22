@@ -38,6 +38,7 @@ from bot.data.dataset import (
 )
 from bot.data.dataset import dataset_id as compute_dataset_id
 from bot.data.feed import Feed
+from bot.data.news import NewsImportResult, import_news_csv
 from bot.db import repositories as repo
 from bot.db.connection import migrate
 from bot.engine.context import SymbolContext, build_symbol_context
@@ -263,6 +264,25 @@ class RunnerService:
         self._invalidate_bars_cache(result.dataset_id)
         return result
 
+    # -------------------------------------------------------------------- news
+    @_locked
+    def import_news(self, path: str) -> NewsImportResult:
+        return import_news_csv(self.conn, Path(path))
+
+    @_locked
+    def list_news(self, from_ts: str | None, to_ts: str | None) -> list[dict[str, Any]]:
+        rows = repo.list_news_events_range(self.conn, from_ts, to_ts)
+        return [
+            {
+                "id": r["id"],
+                "ts_utc": r["ts_utc"],
+                "currency": r["currency"],
+                "impact": r["impact"],
+                "title": r["title"],
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------- run/step
     def _build_instrument(self, symbol: str) -> InstrumentSpec:
         spec = self.instruments_yaml.get(symbol)
@@ -276,6 +296,7 @@ class RunnerService:
             spread_pips=spec["spread_pips"],
             min_lot=spec["min_lot"],
             lot_step=spec["lot_step"],
+            currencies=tuple(spec.get("currencies", ())),
         )
 
     def create_run(
@@ -292,6 +313,13 @@ class RunnerService:
             # only makes sense for a single-symbol config; multi-symbol portfolios
             # always auto-generate one named-child-seeded synthetic dataset per symbol
             # (plan 04 scope -- real per-symbol CSV portfolios are plan 05/07).
+            if dataset_id is not None and len(enabled) > 1:
+                raise ConfigError(
+                    "dataset_id is only supported for a single-symbol config -- "
+                    f"{len(enabled)} symbols are enabled (multi-symbol runs always "
+                    "generate one synthetic dataset per symbol; per-symbol CSV "
+                    "portfolios are a later plan)"
+                )
             single_legacy = len(enabled) == 1 and dataset_id is not None
 
             symbol_contexts: dict[str, SymbolContext] = {}

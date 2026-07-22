@@ -155,17 +155,19 @@ def import_csv_dataset(
     rollover_tz: str = "America/New_York",
     rollover_time: str = "17:00",
 ) -> CsvImportResult:
-    """Idempotent by file content: importing the same bytes twice returns the same
-    dataset id without re-registering (plan requirement)."""
+    """Idempotent by (file content, symbol, native_tf) — the same triple the dataset id
+    is derived from: importing the same bytes for the same symbol/tf twice returns the
+    same dataset without re-registering, while the same file under a DIFFERENT symbol or
+    tf registers a new dataset instead of silently returning the old one's metadata."""
     file_sha = sha256_file(path)
-    existing = repo.find_dataset_by_sha256(conn, file_sha)
+    did = hashlib.sha256(f"{file_sha}:{symbol}:{native_tf}".encode()).hexdigest()[:16]
+    existing = repo.get_dataset(conn, did)
     if existing is not None:
         return CsvImportResult.from_row(existing)
 
     frames = load_csv(path, native_tf, rollover_tz, rollover_time)  # raises FeedError
     base = frames[native_tf]
     gaps = count_grid_gaps(base, native_tf)
-    did = hashlib.sha256(f"{file_sha}:{symbol}:{native_tf}".encode()).hexdigest()[:16]
     start_ts = base.index[0].isoformat()
     end_ts = base.index[-1].isoformat()
     bar_count = len(base)

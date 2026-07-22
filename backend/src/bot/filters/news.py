@@ -1,8 +1,8 @@
-"""Filter 16 — News blackout (GATE, off by default). Empty blacklist -> never blocks."""
+"""Filter 16 — News blackout (GATE, off by default). Plan 06: real imported events
+(bot.data.news, snapshotted per-run in ctx.news_events) replace the old hand-typed
+blacklist_utc ranges. No event data / no matching currency -> never blocks."""
 
 from __future__ import annotations
-
-from datetime import datetime
 
 from bot.core.types import FilterKind, FilterResult
 from bot.filters.base import FilterContext, disabled_result
@@ -10,22 +10,24 @@ from bot.filters.base import FilterContext, disabled_result
 FILTER_ID = "news"
 
 
-def _in_blackout(now: datetime, blacklist_utc: list[str]) -> bool:
-    for entry in blacklist_utc:
-        start_s, _, end_s = entry.partition("/")
-        start = datetime.fromisoformat(start_s)
-        end = datetime.fromisoformat(end_s)
-        if start <= now <= end:
-            return True
-    return False
-
-
 def evaluate(ctx: FilterContext) -> FilterResult:
     cfg = ctx.config.filters.news
     if not cfg.enabled:
         return disabled_result(FILTER_ID, FilterKind.GATE)
 
-    blocked = _in_blackout(ctx.now, cfg.blacklist_utc)
+    currencies = set(ctx.instrument_currencies)
+    event = None
+    if ctx.news_events is not None:
+        event = ctx.news_events.blocking_event(
+            ctx.now, cfg.window_before_min, cfg.window_after_min, currencies, cfg.min_impact
+        )
+    blocked = event is not None
+    detail = (
+        f"news blackout: {event.currency} {event.impact} '{event.title}' @ "
+        f"{event.ts_utc.isoformat()}"
+        if event is not None
+        else "ok"
+    )
     return FilterResult(
         id=FILTER_ID,
         kind=FilterKind.GATE,
@@ -33,6 +35,9 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         evaluated=True,
         passed=not blocked,
         blocking=blocked,
-        values={"blacklist_count": len(cfg.blacklist_utc)},
-        detail="news blackout" if blocked else "ok",
+        values={
+            "event_count": len(ctx.news_events.events) if ctx.news_events is not None else 0,
+            "currencies": sorted(currencies),
+        },
+        detail=detail,
     )

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import enum
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 
@@ -136,3 +137,62 @@ class InstrumentSpec:
     spread_pips: float
     min_lot: float
     lot_step: float
+    # Plan 06: which currencies moving this symbol -- news filter intersects this with
+    # each event's currency. Not hardcoded in filter config; lives on the instrument
+    # profile so it's defined once per symbol.
+    currencies: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# Plan 06: news calendar events. Pure data + lookup here; I/O (CSV import, DB load)
+# lives in bot.data.news so filters can stay I/O-free (invariant #6).
+# ---------------------------------------------------------------------------
+
+IMPACT_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+@dataclass(frozen=True)
+class NewsEvent:
+    ts_utc: datetime
+    currency: str
+    impact: str
+    title: str
+
+
+@dataclass
+class NewsEventsIndex:
+    """`events` sorted ascending by `ts_utc`. `blocking_event` answers "is `now` inside
+    [event.ts - before, event.ts + after] for some qualifying event?" in O(log n + k)
+    via bisect on the precomputed timestamp list, k = candidates in the widened window."""
+
+    events: list[NewsEvent] = field(default_factory=list)
+    _ts: list[datetime] = field(default_factory=list, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._ts = [e.ts_utc for e in self.events]
+
+    def blocking_event(
+        self,
+        now: datetime,
+        window_before_min: int,
+        window_after_min: int,
+        currencies: set[str],
+        min_impact: str,
+    ) -> NewsEvent | None:
+        if not self.events or not currencies:
+            return None
+        min_rank = IMPACT_RANK[min_impact]
+        before = timedelta(minutes=window_before_min)
+        after = timedelta(minutes=window_after_min)
+        # An event at ts blocks `now` iff ts - before <= now <= ts + after, i.e.
+        # ts is in [now - after, now + before] -- narrow the scan to that band first.
+        lo = bisect_left(self._ts, now - after)
+        hi = bisect_right(self._ts, now + before)
+        for ev in self.events[lo:hi]:
+            if IMPACT_RANK.get(ev.impact, 0) < min_rank:
+                continue
+            if ev.currency not in currencies:
+                continue
+            if ev.ts_utc - before <= now <= ev.ts_utc + after:
+                return ev
+        return None

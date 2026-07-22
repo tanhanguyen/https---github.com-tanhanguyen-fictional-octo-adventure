@@ -115,4 +115,6 @@ filters:
     min_ratio: 0.33                          # D4 revised (0.5 = rare pin-bar, starved trades)
   news:
     enabled: false
-    blacklist_utc: []
+    min_impact: high
+    window_before_min: 30
+    window_after_min: 30

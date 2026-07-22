@@ -48,7 +48,7 @@ def resolve_decision(
 
     news = fr.get("news")
     if news is not None and news.blocking:
-        return DecisionOutcome(reason="wait", stage="news", detail=news.detail)
+        return DecisionOutcome(reason="wait", stage="news_blackout", detail=news.detail)
 
     atr_zscore = fr.get("atr_zscore")
     if atr_zscore is not None and atr_zscore.blocking:

@@ -185,6 +185,38 @@ export function FilterConfigPanel({ schema, config, onChanged }: Props) {
                       </label>
                     )
                   }
+                  if (type === 'string') {
+                    const options: string[] | undefined = resolved.enum
+                    if (options) {
+                      return (
+                        <label key={key}>
+                          {key}
+                          <select
+                            value={value ?? ''}
+                            disabled={busy || m.locked}
+                            onChange={(e) => patchFilter(id, { [key]: e.target.value })}
+                          >
+                            {options.map((opt) => (
+                              <option key={opt} value={opt}>
+                                {opt}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )
+                    }
+                    return (
+                      <label key={key}>
+                        {key}
+                        <input
+                          type="text"
+                          value={value ?? ''}
+                          disabled={busy || m.locked}
+                          onChange={(e) => patchFilter(id, { [key]: e.target.value })}
+                        />
+                      </label>
+                    )
+                  }
                   return null
                 })}
                 {m.spec_ref && <span className="muted">{m.spec_ref}</span>}

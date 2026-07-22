@@ -44,6 +44,13 @@ def test_load_csv_base_1h_has_no_15m(tmp_path: Path):
     assert "15m" not in frames_1h
 
 
+def test_out_of_order_open_ts_rejected(tmp_path: Path):
+    rows = [_bar("2024-01-01T00:15:00Z"), _bar("2024-01-01T00:00:00Z")]
+    path = _write_csv(tmp_path, rows)
+    with pytest.raises(FeedError, match="strictly increasing"):
+        load_csv(path, "15m")
+
+
 def test_duplicate_open_ts_rejected(tmp_path: Path):
     rows = [_bar("2024-01-01T00:00:00Z"), _bar("2024-01-01T00:00:00Z")]
     path = _write_csv(tmp_path, rows)

@@ -42,6 +42,7 @@ def _instrument_from_yaml(
         spread_pips=spec["spread_pips"],
         min_lot=spec["min_lot"],
         lot_step=spec["lot_step"],
+        currencies=tuple(spec.get("currencies", ())),
     )
 
 

@@ -74,12 +74,6 @@ def get_dataset(conn: sqlite3.Connection, dataset_id: str) -> sqlite3.Row | None
     return row
 
 
-def find_dataset_by_sha256(conn: sqlite3.Connection, file_sha256: str) -> sqlite3.Row | None:
-    cur = conn.execute("SELECT * FROM dataset WHERE file_sha256 = ?", (file_sha256,))
-    row: sqlite3.Row | None = cur.fetchone()
-    return row
-
-
 def register_csv_dataset(
     conn: sqlite3.Connection,
     dataset_id: str,
@@ -120,18 +114,27 @@ def create_run(
     """`symbol_datasets` maps each symbol in this (portfolio) run to its own dataset id
     (plan 04). `run.dataset_id`/`run.symbol` stay populated (first symbol alphabetically /
     comma-joined) for backward-compatible display; `run_symbol_dataset` is the real
-    per-symbol source of truth."""
+    per-symbol source of truth.
+
+    `news_snapshot_max_id` (plan 06) freezes the news_event id high-water mark at run
+    creation: events are append-only, so a run only ever sees events that existed when it
+    was created -- importing a new file later never changes an existing run's decisions."""
     symbols = sorted(symbol_datasets)
     primary_dataset_id = symbol_datasets[symbols[0]]
+    news_snapshot_max_id = int(
+        conn.execute("SELECT COALESCE(MAX(id), 0) FROM news_event").fetchone()[0]
+    )
     cur = conn.execute(
         "INSERT INTO run(dataset_id, config_version_id, symbol, status, starting_equity, "
-        "created_at_utc, symbols_json) VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'), ?)",
+        "created_at_utc, symbols_json, news_snapshot_max_id) "
+        "VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'), ?, ?)",
         (
             primary_dataset_id,
             config_version_id,
             ",".join(symbols),
             starting_equity,
             json.dumps(symbols),
+            news_snapshot_max_id,
         ),
     )
     run_id = _lastrowid(cur)
@@ -393,3 +396,48 @@ def _ts(dt: datetime) -> str:
 
 def _day(d: date) -> str:
     return d.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# news_event (plan 06): append-only, dedupe on (ts_utc, currency, title).
+# ---------------------------------------------------------------------------
+
+
+def insert_news_event(
+    conn: sqlite3.Connection,
+    ts_utc: str,
+    currency: str,
+    impact: str,
+    title: str,
+    source_file_sha256: str,
+) -> bool:
+    """Returns True if a new row was inserted, False if it was a duplicate."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO news_event(ts_utc, currency, impact, title, "
+        "source_file_sha256, created_at_utc) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+        (ts_utc, currency, impact, title, source_file_sha256),
+    )
+    return cur.rowcount == 1
+
+
+def list_news_events_upto(conn: sqlite3.Connection, max_id: int) -> list[sqlite3.Row]:
+    cur = conn.execute(
+        "SELECT * FROM news_event WHERE id <= ? ORDER BY ts_utc ASC", (max_id,)
+    )
+    return list(cur.fetchall())
+
+
+def list_news_events_range(
+    conn: sqlite3.Connection, from_ts: str | None, to_ts: str | None
+) -> list[sqlite3.Row]:
+    query = "SELECT * FROM news_event WHERE 1=1"
+    params: list[Any] = []
+    if from_ts:
+        query += " AND ts_utc >= ?"
+        params.append(from_ts)
+    if to_ts:
+        query += " AND ts_utc <= ?"
+        params.append(to_ts)
+    query += " ORDER BY ts_utc ASC"
+    cur = conn.execute(query, params)
+    return list(cur.fetchall())

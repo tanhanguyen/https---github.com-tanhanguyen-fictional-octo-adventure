@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 from bot.config.models import BotConfig
-from bot.core.types import Direction, FilterKind, FilterResult, Signal
+from bot.core.types import Direction, FilterKind, FilterResult, NewsEventsIndex, Signal
 
 __all__ = ["FilterContext", "FilterResult", "FilterKind", "disabled_result", "warmup_result"]
 
@@ -73,6 +73,11 @@ class FilterContext:
 
     # DXY
     dxy_change_1h_pct: float | None = None
+
+    # Plan 06: news blackout. `news_events` is the whole run's frozen snapshot (loaded
+    # once by the Runner); `instrument_currencies` is this symbol's own profile.
+    news_events: NewsEventsIndex | None = None
+    instrument_currencies: tuple[str, ...] = ()
 
     extra: dict[str, Any] = field(default_factory=dict)
 
