@@ -498,3 +498,102 @@ chốt trước khi code** (yêu cầu cuối plan 05) — các quyết định 
   "Sửa phễu tín hiệu" (breakout chỉ arm trong regime trend), không phải lỗi chặn hệ thống.
 - Golden forex/crypto **không đổi**: profile FOREX rỗng, `test_replay_golden*.py` chạy lại
   xanh, không cần re-pin.
+
+## Plan 07 — Live paper trading: feed thời gian thực, recovery, cảnh báo (2026-07-23)
+
+Bot chạy 24/7 trên dữ liệu thật, khớp lệnh **giả lập** bằng chính `order_engine`. Không có
+lệnh thật nào được gửi (đó là plan 08).
+
+### Nguyên tắc trung tâm: live KHÔNG tự quyết định gì
+
+`LiveRunner` chỉ làm hai việc: (a) đưa **bar đã đóng** vào `Feed`, (b) gọi
+`Runner.step()` — đúng cái Runner replay dùng. Mọi luật (evaluate-all-decide-after,
+fill-at-next-open D6, C11, merged clock tick đa symbol) đến từ cùng một đoạn code, nên
+`tests/unit/test_live_runner.py::test_live_matches_replay` **so sánh chuỗi decision của hai
+đường bằng nhau tuyệt đối**. Nếu test đó hỏng thì "đã backtest rồi" không còn nói lên điều gì
+về hành vi live — đó là lý do tồn tại của cả module.
+
+Hệ quả: **catch-up không phải trường hợp đặc biệt.** Mất 3 bar vì downtime → 3 bar về cùng
+lúc → `step()` xử lý tuần tự từng bar, mỗi bar với clock đặt tại close của **chính nó**, nên
+quyết định vẫn causal (không nhìn trộm giá mới nhất). Test `miss-3-bars` chạy đúng
+`test_live_matches_replay` với 4 bar/lần poll.
+
+### Quyết định
+
+| # | Điểm | Chốt | Lý do |
+|---|---|---|---|
+| 1 | Recovery sau restart | **Persist state vào DB mỗi bar** (`strategy_state`), KHÔNG re-run `decide()` trên K bar gần nhất | Máy trạng thái retest phụ thuộc đường đi trên cửa sổ không chặn: replay K bar có thể dừng ở trạng thái khác trạng thái từng live, và sai trạng thái retest = âm thầm đổi lệnh nào được vào |
+| 2 | Nội dung state | Cả `OpenTrade` **đầy đủ**, không chỉ hàng `trade` | `tp_rules`, `remaining_fraction`, partial đã thực hiện, bộ đếm settlement **không có cột** và không dựng lại được từ hàng trade |
+| 3 | Idempotent | Bỏ **cả tick** nếu **bất kỳ** symbol due đã có decision tại `bar_ts` đó (`any`, không phải `all`) | Crash giữa tick đa symbol để lại một phần đã quyết định; chạy lại sẽ **nhân đôi** lệnh. Bỏ tick chỉ mất 1 bar không hành động — phía fail-closed, đúng ưu tiên "ít sự cố nhất" của user |
+| 4 | Polling vs websocket | **Polling REST** (`GET /fapi/v1/klines`), ngủ tới `next_bar_close + 5s` | Đơn giản, đủ cho bar ≥ 15m, ít trạng thái lỗi. Websocket là plan 12 |
+| 5 | Wallclock | `now_fn` **inject** từ `bot/core/wallclock.py`; `live_runner.py` không bao giờ gọi đồng hồ hệ thống | Bất biến #3 (`test_no_wallclock`) giữ nguyên **không sửa test**, và mọi test live chạy trên clock giả tất định |
+| 6 | Cảnh báo | Telegram nếu có `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, ngược lại **log-only** | Thiếu token không được làm hỏng gì; lỗi gửi tin bị nuốt + log — kênh báo sự cố không được trở thành sự cố |
+| 7 | DB | `backend/data/live.db` riêng (`BOT_DB_PATH` ghi đè) | Nghịch tay không hỏng lịch sử backtest, và ngược lại |
+| 8 | Config | Snapshot lúc tạo run, **đóng băng**; đổi config = dừng + tạo run live mới | Không hot-reload: một run luôn replay được từ đúng một config version |
+| 9 | Warmup | **Tính**, không đoán: `warmup_bars_required(tf)` = 300 bar HTF quy ra bar gốc (1D → 300×7 = 2101 bar ngày) | `build_context` xin 300 bar khung chính **và** 300 bar khung cao hơn; HTF là ràng buộc quyết định. Vượt giới hạn 1500 bar/request → backfill phân trang lùi |
+
+### Luật giữ lệnh theo khung (user 2026-07-18, `bot/config/hold_rules.py`)
+
+- **TF ≤ H1**: `time_stop` 8 giờ, `bars=None`, **`after_tp1=true`** — *sai lệch #20 so với C5*
+  (C5 tắt time-stop sau TP1). Đây là quyết định rủi ro của user, không phải bug.
+  `execution.weekend_flat=true` cho **FOREX** (crypto perpetual chạy 24/7 → không có cửa sổ
+  nghỉ để đóng, giữ `false`).
+- **TF > H1** (4H/1D/1W): `time_stop.enabled=false`, giữ qua cuối tuần — trùng kết luận
+  profile VN (plan 05).
+- **Áp dụng ở đâu**: chỉ `live_effective_config()`. Backtest **cố ý không** nhận patch này —
+  áp ngược vào lịch sử sẽ đổi hành vi (và golden hash) của mọi run cũ. Thứ tự ưu tiên:
+  config toàn cục < profile SYMBOL_TYPE < **hold rules** < `overrides` per-symbol, nên
+  override thủ công vẫn thắng.
+- **`weekend_flat` là field CONFIG** (`execution.weekend_flat`, default `false`), không phải
+  logic suy ra trong engine — nhờ vậy backtest replay đúng config snapshot của một run live
+  sẽ tái hiện y hệt hành vi live, và mọi golden hash cũ không đổi (default `false`).
+  Engine đóng tại close của bar cuối tuần (Thứ Sáu ≥ 17:00 America/New_York = đúng mốc
+  rollover C3), event `weekend_close`, kết quả phân loại bình thường theo F2.
+- `trade.timeframe` (cột mới) ghi khung lúc mở lệnh để audit không phụ thuộc config đổi sau.
+
+### Sai lệch mới
+
+20. **Time stop 8h vẫn chạy sau TP1 khi TF ≤ H1** — ngược C5, theo quyết định user
+    2026-07-18 (xem bảng trên).
+21. **Không mô hình hoá funding fee** của perpetual — `order_engine` tính P&L thuần theo giá.
+    Kết quả paper crypto khung H4/D1 vì thế lệch so với thật; plan 12a thêm funding, và plan 08
+    coi 12a là điều kiện tiên quyết để tin số liệu paper crypto.
+22. **Không mô hình hoá margin/liquidation** cho futures — plan 12b, **bắt buộc** trước khi
+    plan 08 arm lệnh thật cho crypto.
+
+### Venue & phạm vi
+
+Binance USDⓈ-M Futures (`fapi/v1/klines`, công khai, không cần API key). Testnet dùng chung
+schema → đổi mỗi base URL (`--testnet`). `BinanceFuturesFeed` chỉ nhả bar khi
+`open_ts + tf_duration <= now` (**không** dùng `close_time` của venue, vốn là
+`open + interval − 1ms` và sẽ làm bar cuối trông như đã đóng sớm 1ms).
+FOREX (plan 10) và VN30F bị **từ chối thẳng** khi tạo run live: DNSE Entrade không có endpoint
+nến, nên VN30F cần nguồn market-data do user chỉ định — viết `BarSource` thứ hai theo cùng
+interface, phần còn lại không đổi.
+
+**Một process cho cả danh mục** (rà lại 2026-07-18): `MAX_CONCURRENT_TRADES`, daily-loss-limit
+và `max_total_open_risk_pct` là trần **toàn tài khoản**; mỗi symbol một process sẽ vô hiệu hoá
+toàn bộ chúng. `--symbol` chỉ là override debug.
+
+### API & UI
+
+`GET /api/live/status` mở DB live **read-only** (WAL cho phép đọc song song, không chặn quyết
+định giao dịch): lag = wallclock − close bar cuối, feed_state, uptime, equity. Không có DB /
+không có run live → `running: false` (câu trả lời bình thường, không phải lỗi).
+`POST /api/live/stop` là **ghi duy nhất** API thực hiện lên run live: đặt `run.stop_requested`,
+cờ LiveRunner kiểm mỗi vòng lặp. Badge LIVE trên nav hiện lag, đổi màu theo độ trễ
+(>5 phút vàng, >15 phút đỏ) và đỏ khi feed `degraded`.
+
+### Test
+
+- `test_live_feed.py` (16): bar chưa đóng bị loại, biên `open+dur == now` thuộc phía ĐÃ đóng,
+  retry/backoff+jitter, lỗi venue dạng `{"code":...}`, backfill phân trang, `next_close_after`
+  cho cả 5 khung. Không test nào mở socket.
+- `test_live_runner.py` (8): **live == replay** (1 bar/poll và 4 bar/poll = catch-up sau khi
+  mất 3 bar), restart giữa chừng dựng lại từ DB rồi chạy tiếp vẫn bằng replay, khôi phục lệnh
+  đang mở nguyên vẹn, tick trùng bị bỏ thay vì quyết định hai lần, feed hỏng → `degraded` →
+  hồi phục (mỗi chuyển trạng thái đúng 1 alert), `stop_requested` dừng vòng lặp.
+- `test_hold_rules.py` (13), `test_notify.py` (8), `test_live_factory.py` (9),
+  `tests/api/test_live_status.py` (6).
+- Golden hash forex/crypto/VN **không đổi** (default `weekend_flat=false`, hold rules chỉ
+  áp cho live) — `test_replay_golden*.py` chạy lại xanh, không re-pin.

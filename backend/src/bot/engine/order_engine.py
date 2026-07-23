@@ -39,6 +39,13 @@ class MarketRules:
     rollover_time: str = "17:00"
     #: VN30F1M: force-close any open position at the close of the expiry-day bar.
     expiry_force_close: bool = False
+    #: Plan 07 §4: force-close any open position at the close of the last bar before
+    #: the weekend gap (forex, TF <= H1). False -> no weekend window at all, which is
+    #: both the historical behavior and the correct one for 24/7 crypto perpetuals.
+    weekend_flat: bool = False
+    #: The weekly close instant, given as local time in `rollover_tz`. Forex closes
+    #: Friday 17:00 New York, which is exactly the C3 trading-day rollover.
+    weekend_close_weekday: int = 4  # Monday=0 ... Friday=4
 
 
 @dataclass
@@ -263,6 +270,41 @@ class OrderEngine:
         )
         return self._finalize(trade, bar.close, bar.close_ts, events, "EXPIRY")
 
+    def _maybe_weekend_close(
+        self, trade: OpenTrade, bar: Bar, events: list[TradeEventRecord]
+    ) -> ClosedResult | None:
+        """Plan 07 §4: on a fast timeframe (<= H1) a forex position is not carried over
+        the weekend, so the last bar before the gap closes it at its own close price
+        (result classified normally, F2).
+
+        "Last bar before the gap" is decided on `bar.close_ts` in the rollover tz: the
+        forex week ends Friday 17:00 New York, which is the same instant as the C3
+        trading-day rollover, so a bar that closes at or after it is the final bar of
+        the week regardless of timeframe."""
+        if not self.rules.weekend_flat:
+            return None
+        local = bar.close_ts.astimezone(ZoneInfo(self.rules.rollover_tz))
+        if local.weekday() != self.rules.weekend_close_weekday:
+            return None
+        if local.time() < parse_hhmm(self.rules.rollover_time):
+            return None
+        events.append(
+            TradeEventRecord(
+                "weekend_close", bar.close_ts, bar.close, f"weekend flat at {local.isoformat()}"
+            )
+        )
+        return self._finalize(trade, bar.close, bar.close_ts, events, "WEEKEND_CLOSE")
+
+    def _maybe_forced_close(
+        self, trade: OpenTrade, bar: Bar, events: list[TradeEventRecord]
+    ) -> ClosedResult | None:
+        """Market-structural force closes, in precedence order: the contract ceasing to
+        exist (expiry) outranks the weekend flat, which outranks the time stop."""
+        expired = self._maybe_expiry_close(trade, bar, events)
+        if expired is not None:
+            return expired
+        return self._maybe_weekend_close(trade, bar, events)
+
     def _pnl_amount(
         self, direction: Direction, entry: float, exit_price: float, lot: float
     ) -> float:
@@ -439,17 +481,18 @@ class OrderEngine:
                     trade, price2, bar.open_ts, events, "BE" if kind2 == "SL" else "TP2"
                 )
                 return BarOutcome(trade=None, events=events, closed_result=closed)
-            # The remaining half survived TP1 -- it still cannot outlive the contract.
-            expired = self._maybe_expiry_close(trade, bar, events)
-            if expired is not None:
-                return BarOutcome(trade=None, events=events, closed_result=expired)
+            # The remaining half survived TP1 -- it still cannot outlive the contract
+            # (expiry) or the trading week (weekend flat).
+            forced = self._maybe_forced_close(trade, bar, events)
+            if forced is not None:
+                return BarOutcome(trade=None, events=events, closed_result=forced)
             return BarOutcome(trade=trade, events=events, closed_result=None)
 
-        # No exit this bar -- expiry force-close first (the contract ceases to exist,
-        # which outranks the time stop), then the time stop at bar.close (C5).
-        expired = self._maybe_expiry_close(trade, bar, events)
-        if expired is not None:
-            return BarOutcome(trade=None, events=events, closed_result=expired)
+        # No exit this bar -- structural force-closes first (expiry / weekend flat, both
+        # of which outrank the time stop), then the time stop at bar.close (C5).
+        forced = self._maybe_forced_close(trade, bar, events)
+        if forced is not None:
+            return BarOutcome(trade=None, events=events, closed_result=forced)
 
         assert trade.entry_bar_ts is not None
         if time_stop_enabled and is_expired(

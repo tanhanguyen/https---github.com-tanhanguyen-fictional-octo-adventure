@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import './App.css'
+import { LiveBadge } from './components/LiveBadge'
 import { ConfigPage } from './pages/ConfigPage'
 import { Dashboard } from './pages/Dashboard'
 import { DatasetsPage } from './pages/DatasetsPage'
@@ -31,6 +32,7 @@ function App() {
         <NavLink to="/runs" className={({ isActive }) => (isActive ? 'active' : '')}>
           Runs
         </NavLink>
+        <LiveBadge />
       </nav>
       <main className="app-main">
         <Routes>

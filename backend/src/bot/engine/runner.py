@@ -47,6 +47,10 @@ class StepSummary:
     trade_event_types: list[str] = field(default_factory=list)
     closed_result: str | None = None
     equity: float = 0.0
+    # Plan 07: the live runner alerts on closes and wants the numbers without a
+    # round-trip to the DB. None whenever `closed_result` is None.
+    closed_pnl_r: float | None = None
+    closed_pnl_amount: float | None = None
 
 
 class Runner:
@@ -93,8 +97,13 @@ class Runner:
             sc.trade.risk_pct_effective for sc in self.symbols.values() if sc.trade is not None
         )
 
-    def step(self) -> list[StepSummary]:
-        # --- find the next merged clock tick -------------------------------------
+    def next_tick(self) -> tuple[datetime, list[tuple[str, datetime]]] | None:
+        """The next merged clock tick and the `(symbol, bar_open_ts)` pairs due at it,
+        in alphabetical order — or None when no symbol has another bar.
+
+        Split out of `step()` so the live runner can look at what WOULD be processed
+        (its idempotency check) without re-deriving the merge rule and drifting from it.
+        """
         candidates: list[tuple[datetime, str, datetime]] = []
         for sym, sc in self.symbols.items():
             tf = sc.effective_config.timeframe
@@ -103,17 +112,26 @@ class Runner:
                 continue
             candidates.append((ts + tf_duration(tf), sym, ts))
         if not candidates:
-            return []
+            return None
 
-        next_tick = min(c[0] for c in candidates)
+        tick = min(c[0] for c in candidates)
         due = sorted(
-            ((sym, ts) for close_ts, sym, ts in candidates if close_ts == next_tick),
+            ((sym, ts) for close_ts, sym, ts in candidates if close_ts == tick),
             key=lambda pair: pair[0],
         )
+        return tick, due
+
+    def step(self) -> list[StepSummary]:
+        # --- find the next merged clock tick -------------------------------------
+        upcoming = self.next_tick()
+        if upcoming is None:
+            return []
+        next_tick, due = upcoming
 
         # --- 1. order_engine.process_bar for every due symbol (bar t still LIVE) ---
         events_by_symbol: dict[str, list[str]] = {}
         closed_result_by_symbol: dict[str, str | None] = {}
+        closed_pnl_by_symbol: dict[str, tuple[float, float]] = {}
         for sym, ts in due:
             sc = self.symbols[sym]
             bar = sc.price_feed.bar_at(sc.effective_config.timeframe, ts)
@@ -156,6 +174,7 @@ class Runner:
                 sc.trade = None
                 sc.trade_db_id = None
                 closed_result_label = r.result
+                closed_pnl_by_symbol[sym] = (r.pnl_r, r.pnl_amount)
             elif outcome.trade is None and trade_db_id_before is not None:
                 repo.update_trade(self.conn, trade_db_id_before, status="CANCELLED")
                 sc.trade = None
@@ -238,6 +257,9 @@ class Runner:
                         status=OrderStatus.PENDING.value,
                         sl_price=t.sl,
                         lot_size=None,
+                        # Plan 07: snapshot the timeframe at open time so the hold
+                        # rules stay auditable if the config changes later.
+                        timeframe=sc.effective_config.timeframe,
                     ),
                 )
                 t.local_id = new_trade_db_id
@@ -248,6 +270,7 @@ class Runner:
                 self.conn, self.run_id, self.clock.now.isoformat(), ml.bundle, new_trade_db_id, sym
             )
 
+            pnl = closed_pnl_by_symbol.get(sym)
             summaries.append(
                 StepSummary(
                     bar_ts=self.clock.now.isoformat(),
@@ -257,6 +280,8 @@ class Runner:
                     trade_event_types=events_by_symbol.get(sym, []),
                     closed_result=closed_result_by_symbol.get(sym),
                     equity=self.equity,
+                    closed_pnl_r=None if pnl is None else pnl[0],
+                    closed_pnl_amount=None if pnl is None else pnl[1],
                 )
             )
 

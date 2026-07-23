@@ -110,6 +110,7 @@ def create_run(
     config_version_id: int,
     symbol_datasets: dict[str, str],
     starting_equity: float,
+    mode: str = "backtest",
 ) -> int:
     """`symbol_datasets` maps each symbol in this (portfolio) run to its own dataset id
     (plan 04). `run.dataset_id`/`run.symbol` stay populated (first symbol alphabetically /
@@ -126,8 +127,8 @@ def create_run(
     )
     cur = conn.execute(
         "INSERT INTO run(dataset_id, config_version_id, symbol, status, starting_equity, "
-        "created_at_utc, symbols_json, news_snapshot_max_id) "
-        "VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'), ?, ?)",
+        "created_at_utc, symbols_json, news_snapshot_max_id, mode) "
+        "VALUES (?, ?, ?, 'RUNNING', ?, datetime('now'), ?, ?, ?)",
         (
             primary_dataset_id,
             config_version_id,
@@ -135,6 +136,7 @@ def create_run(
             starting_equity,
             json.dumps(symbols),
             news_snapshot_max_id,
+            mode,
         ),
     )
     run_id = _lastrowid(cur)
@@ -188,14 +190,17 @@ class TradeRecord:
     pnl_amount: float | None = None
     pnl_r: float | None = None
     decision_id: int | None = None
+    # Plan 07: the timeframe this trade was opened on, snapshotted so the hold rules
+    # (TF <= H1 vs TF > H1) stay auditable when the config changes later.
+    timeframe: str | None = None
 
 
 def insert_trade(conn: sqlite3.Connection, t: TradeRecord) -> int:
     cur = conn.execute(
         "INSERT INTO trade(run_id, symbol, strategy, direction, status, entry_price, "
         "sl_price, tp1_price, tp2_price, lot_size, opened_at_utc, closed_at_utc, "
-        "trading_day, result, pnl_amount, pnl_r, decision_id) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "trading_day, result, pnl_amount, pnl_r, decision_id, timeframe) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             t.run_id,
             t.symbol,
@@ -214,6 +219,7 @@ def insert_trade(conn: sqlite3.Connection, t: TradeRecord) -> int:
             t.pnl_amount,
             t.pnl_r,
             t.decision_id,
+            t.timeframe,
         ),
     )
     conn.commit()
@@ -399,6 +405,98 @@ def _day(d: date) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Live paper trading (plan 07): run mode / stop flag / strategy state / feed status.
+# ---------------------------------------------------------------------------
+
+
+def upsert_live_dataset(conn: sqlite3.Connection, dataset_id: str, symbol: str, tf: str) -> None:
+    """A live 'dataset' is the venue stream itself: there is no file to hash, but `run`
+    has an FK to `dataset`, and naming the stream keeps a live run's provenance
+    (venue/symbol/timeframe) readable in the run registry."""
+    conn.execute(
+        "INSERT OR IGNORE INTO dataset(id, spec_json, created_at_utc, kind, symbol, native_tf) "
+        "VALUES (?, '{}', datetime('now'), 'live', ?, ?)",
+        (dataset_id, symbol, tf),
+    )
+    conn.commit()
+
+
+def find_active_live_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """The most recent RUNNING run with mode='live' — what a restarted LiveRunner
+    resumes. There is at most one in practice (a live DB holds one live run at a time);
+    picking the newest keeps the choice deterministic if an older one was left RUNNING."""
+    cur = conn.execute(
+        "SELECT * FROM run WHERE mode='live' AND status='RUNNING' ORDER BY id DESC LIMIT 1"
+    )
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def set_run_status(conn: sqlite3.Connection, run_id: int, status: str) -> None:
+    conn.execute("UPDATE run SET status=? WHERE id=?", (status, run_id))
+    conn.commit()
+
+
+def request_stop(conn: sqlite3.Connection, run_id: int, requested: bool = True) -> None:
+    conn.execute("UPDATE run SET stop_requested=? WHERE id=?", (1 if requested else 0, run_id))
+    conn.commit()
+
+
+def stop_requested(conn: sqlite3.Connection, run_id: int) -> bool:
+    cur = conn.execute("SELECT stop_requested FROM run WHERE id=?", (run_id,))
+    row = cur.fetchone()
+    return bool(row[0]) if row is not None else False
+
+
+def save_strategy_state(
+    conn: sqlite3.Connection, run_id: int, symbol: str, state_json: str, now_iso: str
+) -> None:
+    conn.execute(
+        "INSERT INTO strategy_state(run_id, symbol, state_json, updated_at_utc) "
+        "VALUES (?,?,?,?) ON CONFLICT(run_id, symbol) DO UPDATE SET "
+        "state_json=excluded.state_json, updated_at_utc=excluded.updated_at_utc",
+        (run_id, symbol, state_json, now_iso),
+    )
+    conn.commit()
+
+
+def load_strategy_states(conn: sqlite3.Connection, run_id: int) -> dict[str, str]:
+    cur = conn.execute("SELECT symbol, state_json FROM strategy_state WHERE run_id=?", (run_id,))
+    return {str(row[0]): str(row[1]) for row in cur.fetchall()}
+
+
+def update_live_status(conn: sqlite3.Connection, run_id: int, **fields: object) -> None:
+    """Upsert the live_status row for `run_id` (created on first call)."""
+    conn.execute("INSERT OR IGNORE INTO live_status(run_id) VALUES (?)", (run_id,))
+    if fields:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(f"UPDATE live_status SET {cols} WHERE run_id = ?", (*fields.values(), run_id))
+    conn.commit()
+
+
+def get_live_status(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM live_status WHERE run_id=?", (run_id,))
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def decision_exists(conn: sqlite3.Connection, run_id: int, symbol: str, bar_ts_utc: str) -> bool:
+    cur = conn.execute(
+        "SELECT 1 FROM decision WHERE run_id=? AND symbol=? AND bar_ts_utc=? LIMIT 1",
+        (run_id, symbol, bar_ts_utc),
+    )
+    return cur.fetchone() is not None
+
+
+def open_trades_for_run(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:
+    cur = conn.execute(
+        "SELECT * FROM trade WHERE run_id=? AND status IN ('PENDING','OPEN') ORDER BY id",
+        (run_id,),
+    )
+    return list(cur.fetchall())
+
+
+# ---------------------------------------------------------------------------
 # news_event (plan 06): append-only, dedupe on (ts_utc, currency, title).
 # ---------------------------------------------------------------------------
 
@@ -421,9 +519,7 @@ def insert_news_event(
 
 
 def list_news_events_upto(conn: sqlite3.Connection, max_id: int) -> list[sqlite3.Row]:
-    cur = conn.execute(
-        "SELECT * FROM news_event WHERE id <= ? ORDER BY ts_utc ASC", (max_id,)
-    )
+    cur = conn.execute("SELECT * FROM news_event WHERE id <= ? ORDER BY ts_utc ASC", (max_id,))
     return list(cur.fetchall())
 
 

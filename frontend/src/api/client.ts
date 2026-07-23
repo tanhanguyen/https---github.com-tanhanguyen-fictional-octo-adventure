@@ -11,6 +11,7 @@ import type {
   DecisionStatsOut,
   EquityPointOut,
   FilterRowOut,
+  LiveStatusOut,
   NewsEventOut,
   NewsImportOut,
   RunCompareOut,
@@ -35,6 +36,8 @@ export const api = {
   health: () => http.get<{ status: string }>('/health').then((r) => r.data),
 
   getAccount: () => http.get<AccountOut>('/account').then((r) => r.data),
+
+  getLiveStatus: () => http.get<LiveStatusOut>('/live/status').then((r) => r.data),
 
   getConfig: () => http.get<ConfigOut>('/config').then((r) => r.data),
   patchConfig: (patch: Record<string, unknown>) =>

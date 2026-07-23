@@ -290,3 +290,45 @@ input[type='text'] {
     grid-template-columns: 1fr;
   }
 }
+
+/* Plan 07: LIVE badge in the nav bar. Colour encodes feed health + bar lag. */
+.live-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.live-badge-lag {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.live-badge-idle {
+  color: var(--text);
+  opacity: 0.6;
+}
+
+.live-badge-ok {
+  color: #0a7c42;
+  border-color: #0a7c42;
+  background: rgba(10, 124, 66, 0.08);
+}
+
+.live-badge-warn {
+  color: #a06000;
+  border-color: #a06000;
+  background: rgba(160, 96, 0, 0.1);
+}
+
+.live-badge-bad {
+  color: #b3261e;
+  border-color: #b3261e;
+  background: rgba(179, 38, 30, 0.1);
+}

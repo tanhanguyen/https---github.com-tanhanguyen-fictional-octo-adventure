@@ -246,6 +246,11 @@ class ExecutionCostsConfig(StrictModel):
 
 class ExecutionConfig(StrictModel):
     costs: ExecutionCostsConfig = Field(default_factory=ExecutionCostsConfig)
+    # Plan 07 §4 (user decision 2026-07-18): force-close any open position at the close
+    # of the last bar before the weekend gap. Default False so every existing backtest
+    # (and every golden hash) is untouched; `bot.config.hold_rules` turns it on for a
+    # FOREX symbol running TF <= H1. Crypto perpetuals are 24/7 -> stays False.
+    weekend_flat: bool = False
 
 
 class RiskConfig(StrictModel):
@@ -385,6 +390,26 @@ def effective_config_for_symbol(base: BotConfig, entry: SymbolEntry) -> BotConfi
     base_dict = base.model_dump(mode="json", exclude={"symbols"})
     merged = deep_merge(base_dict, profile_patch(entry.symbol_type))
     merged = deep_merge(merged, patch)
+    return BotConfig.model_validate(merged)
+
+
+def live_effective_config(base: BotConfig, entry: SymbolEntry) -> BotConfig:
+    """`effective_config_for_symbol` + the plan 07 hold rules for LIVE runs.
+
+    The hold rules are derived from the timeframe the symbol actually ends up running
+    (after profile + overrides), then re-topped with `entry.overrides` so an explicit
+    per-symbol setting still wins. Backtest runs deliberately do NOT get this patch:
+    the rules are a live risk policy, and applying them retroactively would silently
+    change every historical run's behavior (and its golden hash)."""
+    from bot.config.hold_rules import hold_rule_patch
+    from bot.config.loader import deep_merge
+
+    eff = effective_config_for_symbol(base, entry)
+    merged = deep_merge(
+        eff.model_dump(mode="json", exclude={"symbols"}),
+        hold_rule_patch(eff.timeframe, eff.symbol_type),
+    )
+    merged = deep_merge(merged, dict(entry.overrides))
     return BotConfig.model_validate(merged)
 
 

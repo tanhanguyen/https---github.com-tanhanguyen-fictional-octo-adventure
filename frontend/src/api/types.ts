@@ -299,3 +299,20 @@ export interface RunStepOut {
   equity: number
   exhausted: boolean
 }
+
+/** Plan 07: live paper-trading status. `running: false` is the normal idle answer. */
+export interface LiveStatusOut {
+  running: boolean
+  db_path: string
+  run_id: number | null
+  symbols: string[]
+  feed_state: string
+  detail: string
+  last_bar_ts_utc: string | null
+  started_at_utc: string | null
+  lag_seconds: number | null
+  uptime_seconds: number | null
+  stop_requested: boolean
+  equity: number | null
+  open_trades: number | null
+}

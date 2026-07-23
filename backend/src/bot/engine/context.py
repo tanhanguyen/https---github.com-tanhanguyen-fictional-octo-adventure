@@ -14,7 +14,7 @@ from bot.config.profiles import (
     VN_CASH_SETTLEMENT_TRADING_DAYS,
     VN_ROLLOVER_TZ,
 )
-from bot.core.timeframes import higher_tf, tf_duration
+from bot.core.timeframes import CONTEXT_LOOKBACK, higher_tf, tf_duration
 from bot.core.types import InstrumentSpec, NewsEventsIndex
 from bot.data.feed import Feed
 from bot.engine.order_engine import MarketRules, OpenTrade, OrderEngine
@@ -28,7 +28,7 @@ from bot.indicators.sma import sma
 from bot.indicators.zscore import zscore
 from bot.strategies.base import BreakoutState
 
-LOOKBACK = 300
+LOOKBACK = CONTEXT_LOOKBACK
 
 
 @dataclass
@@ -68,10 +68,17 @@ class SymbolContext:
 
 
 def build_symbol_context(
-    effective_config: BotConfig, price_feed: Feed, instrument: InstrumentSpec
+    effective_config: BotConfig,
+    price_feed: Feed,
+    instrument: InstrumentSpec,
+    cursor: datetime | None = None,
 ) -> SymbolContext:
     """Shared by CLI and API: builds one symbol's run-time state from its own effective
-    (already-merged) config, feed and instrument spec (plan 04)."""
+    (already-merged) config, feed and instrument spec (plan 04).
+
+    `cursor` defaults to the feed's first bar (replay: start at the beginning). The live
+    path (plan 07) passes it explicitly because its feed is still empty at build time —
+    `LiveRunner.start()` fills it and sets the real cursor."""
     tf = effective_config.timeframe
     ts_cfg = effective_config.filters.time_stop
     if ts_cfg.bars is not None:
@@ -85,7 +92,10 @@ def build_symbol_context(
         costs=effective_config.execution.costs,
         rules=market_rules_for(effective_config),
     )
-    first_ts = price_feed.frames[tf].index[0].to_pydatetime()
+    if cursor is not None:
+        first_ts = cursor
+    else:
+        first_ts = price_feed.frames[tf].index[0].to_pydatetime()
     return SymbolContext(
         symbol=effective_config.symbol,
         effective_config=effective_config,
@@ -105,6 +115,11 @@ def market_rules_for(effective_config: BotConfig) -> MarketRules:
     rollover_tz = effective_config.trading_day_rollover_tz
     rollover_time = effective_config.trading_day_rollover_time
 
+    # Plan 07 §4: weekend flat is a config field (default False, so every pre-plan-07
+    # run is unchanged) rather than something derived here, so a backtest replaying a
+    # live run's config snapshot reproduces the live behavior exactly.
+    weekend_flat = effective_config.execution.weekend_flat
+
     if effective_config.symbol_type == "STOCK_VN_CASH":
         return MarketRules(
             settlement_trading_days=VN_CASH_SETTLEMENT_TRADING_DAYS,
@@ -112,14 +127,18 @@ def market_rules_for(effective_config: BotConfig) -> MarketRules:
             settlement_tz=VN_ROLLOVER_TZ,
             rollover_tz=rollover_tz,
             rollover_time=rollover_time,
+            weekend_flat=weekend_flat,
         )
     if effective_config.symbol_type == "STOCK_VN_DERIV":
         return MarketRules(
             rollover_tz=rollover_tz,
             rollover_time=rollover_time,
             expiry_force_close=True,
+            weekend_flat=weekend_flat,
         )
-    return MarketRules(rollover_tz=rollover_tz, rollover_time=rollover_time)
+    return MarketRules(
+        rollover_tz=rollover_tz, rollover_time=rollover_time, weekend_flat=weekend_flat
+    )
 
 
 def build_context(

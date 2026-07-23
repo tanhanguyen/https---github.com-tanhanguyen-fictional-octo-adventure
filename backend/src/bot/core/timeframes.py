@@ -34,8 +34,37 @@ TIMEFRAME_HIERARCHY: dict[str, str | None] = {
 TF_ORDER: list[str] = ["15m", "1H", "4H", "1D", "1W"]
 
 
+#: How many bars of the primary timeframe `build_context` feeds the indicators
+#: (bot.engine.context.LOOKBACK). Lives here so the live feed can compute its warmup
+#: requirement without importing the engine (dependency direction, invariant #6).
+CONTEXT_LOOKBACK = 300
+
+
 def tf_rank(tf: str) -> int:
     return TF_ORDER.index(tf)
+
+
+def bars_per(outer_tf: str, inner_tf: str) -> int:
+    """How many `inner_tf` bars fit in one `outer_tf` bar (rounded up)."""
+    inner = tf_duration(inner_tf)
+    outer = tf_duration(outer_tf)
+    return -(-int(outer.total_seconds()) // int(inner.total_seconds()))
+
+
+def warmup_bars_required(timeframe: str, lookback: int = CONTEXT_LOOKBACK) -> int:
+    """Bars of `timeframe` a live feed must backfill before the first live decision.
+
+    `build_context` asks the feed for `lookback` bars of the primary timeframe AND
+    `lookback` bars of the higher timeframe (§6.5 pairs), and the higher frame is
+    resampled from the primary one — so the binding constraint is the HTF, e.g. 1D
+    primary needs 300 weekly bars => 300*7 daily bars. Computed, not guessed (plan 07
+    §1: "tính đúng số bar cần, đừng đoán"); the +1 covers the bar being decided on.
+    """
+    need = lookback
+    htf = higher_tf(timeframe)
+    if htf is not None:
+        need = max(need, lookback * bars_per(htf, timeframe))
+    return need + 1
 
 
 def tf_duration(tf: str) -> timedelta:

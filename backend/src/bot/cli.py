@@ -259,6 +259,34 @@ def cmd_replay_dataset(dataset_id: str, bars: int) -> int:
     return 0
 
 
+def cmd_live(symbol: str | None, db_path: str | None, testnet: bool, iterations: int | None) -> int:
+    """Plan 07: one process runs the whole live portfolio (account-wide caps only mean
+    something if one process owns them). `--symbol` is a debug override for running a
+    single symbol; `--iterations` bounds the loop for smoke tests."""
+    from bot.data.live_feed import BINANCE_FUTURES_MAINNET, BINANCE_FUTURES_TESTNET
+    from bot.engine.live_factory import build_live_session
+
+    session = build_live_session(
+        db_path=db_path,
+        only_symbol=symbol,
+        base_url=BINANCE_FUTURES_TESTNET if testnet else BINANCE_FUTURES_MAINNET,
+    )
+    print(f"live run_id: {session.run_id}  ({'resumed' if session.resumed else 'new'})")
+    print(f"symbols: {sorted(session.runner.symbols)}")
+    print(f"db: {db_path or 'BOT_DB_PATH / backend/data/live.db'}")
+    try:
+        stats = session.runner.run_forever(max_iterations=iterations)
+    finally:
+        session.close()
+    print(
+        f"bars processed: {stats.bars_processed}  polls: {stats.polls} "
+        f"(failures {stats.poll_failures})  opened: {stats.trades_opened} "
+        f"closed: {stats.trades_closed}  skipped duplicate ticks: "
+        f"{stats.skipped_duplicate_ticks}"
+    )
+    return 0
+
+
 # Filters that never toggle (locked, or DERIVED/structural) -- excluded from the A/B sweep.
 _AB_EXCLUDED_FILTERS = {"atr_ref"}
 
@@ -347,6 +375,18 @@ def main(argv: list[str] | None = None) -> int:
         "--native-tf", type=str, default="15m", choices=["15m", "1H", "4H", "1D"]
     )
 
+    live = sub.add_parser("live", help="Run live paper trading on a real-time venue feed")
+    live.add_argument(
+        "--symbol", type=str, default=None, help="Debug override: run this symbol only"
+    )
+    live.add_argument("--db", type=str, default=None, help="Live DB path (default: $BOT_DB_PATH)")
+    live.add_argument(
+        "--testnet", action="store_true", help="Use the Binance futures testnet base URL"
+    )
+    live.add_argument(
+        "--iterations", type=int, default=None, help="Stop after N poll rounds (smoke test)"
+    )
+
     import_news = sub.add_parser(
         "import-news", help="Import a standardized news-calendar CSV into news_event"
     )
@@ -363,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import_csv(args.path, args.symbol, args.native_tf)
     if args.command == "import-news":
         return cmd_import_news(args.path)
+    if args.command == "live":
+        return cmd_live(args.symbol, args.db, args.testnet, args.iterations)
     return 1
 
 

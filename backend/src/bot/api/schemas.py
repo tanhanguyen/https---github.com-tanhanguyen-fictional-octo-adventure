@@ -324,3 +324,22 @@ class NewsEventOut(BaseModel):
     currency: str
     impact: str
     title: str
+
+
+class LiveStatusOut(BaseModel):
+    """Plan 07 §4: what the dashboard's LIVE badge needs. `running=False` (with every
+    optional field left None) is the normal "nothing is live right now" answer."""
+
+    running: bool
+    db_path: str
+    run_id: int | None = None
+    symbols: list[str] = []
+    feed_state: str = "unknown"  # ok | degraded | unknown
+    detail: str = ""
+    last_bar_ts_utc: str | None = None
+    started_at_utc: str | None = None
+    lag_seconds: float | None = None  # wallclock - close of last processed bar
+    uptime_seconds: float | None = None
+    stop_requested: bool = False
+    equity: float | None = None
+    open_trades: int | None = None

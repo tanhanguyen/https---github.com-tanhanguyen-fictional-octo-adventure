@@ -12,6 +12,7 @@ from bot.api.routers import (
     decisions,
     equity,
     filters,
+    live,
     news,
     run,
     runs,
@@ -41,6 +42,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
     app.include_router(datasets.router, prefix="/api", tags=["datasets"])
     app.include_router(equity.router, prefix="/api", tags=["equity"])
     app.include_router(news.router, prefix="/api", tags=["news"])
+    app.include_router(live.router, prefix="/api", tags=["live"])
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

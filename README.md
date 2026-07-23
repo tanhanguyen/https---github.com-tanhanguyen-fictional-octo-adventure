@@ -72,6 +72,31 @@ JSON dạng TradingView/vnstock `{t,o,h,l,c,v}`):
 ./.venv/bin/python -m scripts.convert_csv vnstock --glob "data/examples/phai sinh vnstock/*VN30F1M*.json" --out data/csv/VN30F1M_1D.csv
 ```
 
+### Cách A′ — Live paper trading (plan 07)
+
+Chạy 24/7 trên dữ liệu **thật, thời gian thực** (Binance USDⓈ-M Futures klines — công khai,
+không cần API key), khớp lệnh **giả lập** bằng chính order_engine. **Không đặt lệnh thật.**
+
+```bash
+cd backend
+BOT_DB_PATH=data/live.db ./.venv/bin/python -m bot.cli live
+```
+
+- **Một process chạy cả danh mục** `config.symbols` — `MAX_CONCURRENT_TRADES`, daily-loss-limit
+  và `max_total_open_risk_pct` là trần toàn tài khoản, mỗi symbol một process sẽ vô hiệu hoá
+  chúng. `--symbol BTCUSDT` chỉ là override debug.
+- `--testnet` đổi sang `testnet.binancefuture.com` (cùng schema, khác base URL).
+- DB live **tách khỏi** DB backtest (mặc định `backend/data/live.db`, đổi bằng `BOT_DB_PATH`).
+- Cảnh báo Telegram nếu đặt `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`; không có thì log-only,
+  mọi thứ vẫn chạy.
+- Khởi động lại là an toàn: state máy trạng thái + lệnh đang mở được nạp lại từ DB, bar bị
+  thiếu trong lúc chết được xử lý tuần tự (catch-up), bar đã xử lý không bao giờ chạy hai lần.
+- Dừng: `POST /api/live/stop` (đặt cờ `run.stop_requested`, runner kiểm mỗi vòng lặp), hoặc Ctrl-C.
+- Theo dõi: `GET /api/live/status` (lag, feed_state, uptime, equity) — dashboard hiện badge LIVE.
+
+Chỉ CRYPTO có feed live ở plan này. FOREX là plan 10; VN30F cần nguồn nến do user chỉ định
+(API DNSE Entrade chỉ có giao dịch/tài sản, không có endpoint OHLC).
+
 ### Cách B — REST API (backend chạy độc lập)
 
 ```bash
@@ -211,15 +236,17 @@ Test then chốt: `test_no_lookahead` (bất biến MTF nến-đã-đóng), `tes
 
 ```
 backend/src/bot/
-├── core/         types, clock (inject được — engine cấm datetime.now), timeframes
+├── core/         types, clock (inject được — engine cấm đồng hồ hệ thống), timeframes, wallclock
 ├── indicators/   EMA, ATR, ADX, RSI, Efficiency Ratio, Z-score … (hàm thuần pandas, đúng công thức §6)
 ├── filters/      16 filter (registry, bật/tắt độc lập)
 ├── strategies/   breakout_retest, mean_reversion
 ├── engine/       context, main_loop (evaluate-all-decide-after), order_engine, runner, decision_log
-├── data/         synthetic feed (mock), resample, dataset (deterministic, seed 42)
+│              live_runner + live_state + live_factory (plan 07: paper trading thời gian thực)
+├── data/         synthetic feed (mock), csv_feed, live_feed (Binance futures), resample, dataset
 ├── db/           SQLite schema + repositories (bộ đếm DERIVED, config versioned)
 ├── api/          FastAPI routers (mỏng) trên RunnerService
-└── cli.py        `python -m bot.cli replay`
+├── notify.py     cảnh báo Telegram (không token → log-only)
+└── cli.py        `python -m bot.cli replay|live|ab|import-csv|import-news`
 
 frontend/src/     React + Vite + TS — pages/ Dashboard, Config, Decisions, Trades
 docs/             spec_v1_2.md (nguồn chân lý), decisions.md (C1–C11, D1–D11, sai lệch)

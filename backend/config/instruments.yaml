@@ -55,6 +55,38 @@ instruments:
     currencies: [XAU, USD]
 
   # ---------------------------------------------------------------------------
+  # Crypto perpetual futures (plan 07). Binance USDⓈ-M: the contract is 1 coin, quoted
+  # and settled in USDT, so contract_size = 1 and P&L is already in the account
+  # currency. `pip` is the venue tick size; pip_value_per_lot = pip x contract_size
+  # keeps the sizing/P&L invariant (see the XAUUSD note above).
+  # min_lot/lot_step mirror the exchange LOT_SIZE filter (BTC 0.001, ETH 0.001).
+  # NOTE: order_engine prices these trades from bar data only -- perpetual FUNDING FEE
+  # is not modelled (deviation, docs/decisions.md); plan 12a adds it.
+  # ---------------------------------------------------------------------------
+  BTCUSDT:
+    symbol: BTCUSDT
+    symbol_type: CRYPTO
+    contract_size: 1
+    pip: 0.1
+    pip_value_per_lot: 0.1      # = pip (0.1) x contract_size (1)
+    spread_pips: 0.0
+    min_lot: 0.001
+    lot_step: 0.001
+    synthetic_start_price: 60000.0
+    currencies: [BTC, USDT]
+  ETHUSDT:
+    symbol: ETHUSDT
+    symbol_type: CRYPTO
+    contract_size: 1
+    pip: 0.01
+    pip_value_per_lot: 0.01     # = pip (0.01) x contract_size (1)
+    spread_pips: 0.0
+    min_lot: 0.001
+    lot_step: 0.001
+    synthetic_start_price: 3000.0
+    currencies: [ETH, USDT]
+
+  # ---------------------------------------------------------------------------
   # Stock VN (plan 05). Prices and P&L are in VND: an all-VN portfolio runs a VND
   # account (`starting_equity` read as VND, mixing with FOREX/CRYPTO rejected by
   # BotConfig) precisely so no currency conversion is needed anywhere.
