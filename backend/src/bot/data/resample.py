@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from bot.core.timeframes import trading_day
+from bot.core.timeframes import trading_day, trading_day_start_local
 
 _AGG = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
 
@@ -25,7 +25,6 @@ def resample_trading_day(
     """1H -> 1D, anchored to the trading-day rollover (C3) so the daily candle and the
     trading day share one boundary."""
     tz = ZoneInfo(rollover_tz)
-    hh, mm = (int(p) for p in rollover_time.split(":"))
 
     days = [trading_day(ts.to_pydatetime(), rollover_tz, rollover_time) for ts in df.index]
     tmp = df.copy()
@@ -34,7 +33,7 @@ def resample_trading_day(
     rows = []
     for day, g in tmp.groupby("_day"):
         g = g.sort_index()
-        open_local = datetime.combine(day - timedelta(days=1), time(hh, mm), tzinfo=tz)
+        open_local = trading_day_start_local(day, rollover_time).replace(tzinfo=tz)
         open_ts = open_local.astimezone(ZoneInfo("UTC"))
         rows.append(
             {
@@ -56,7 +55,6 @@ def resample_trading_week(
 ) -> pd.DataFrame:
     """1D -> 1W, Monday-trading-day anchored (same rollover convention, C3)."""
     tz = ZoneInfo(rollover_tz)
-    hh, mm = (int(p) for p in rollover_time.split(":"))
 
     def week_start(ts: pd.Timestamp) -> date:
         local_day = trading_day(ts.to_pydatetime(), rollover_tz, rollover_time)
@@ -68,7 +66,7 @@ def resample_trading_week(
     rows = []
     for wk, g in tmp.groupby("_week"):
         g = g.sort_index()
-        open_local = datetime.combine(wk - timedelta(days=1), time(hh, mm), tzinfo=tz)
+        open_local = trading_day_start_local(wk, rollover_time).replace(tzinfo=tz)
         open_ts = open_local.astimezone(ZoneInfo("UTC"))
         rows.append(
             {

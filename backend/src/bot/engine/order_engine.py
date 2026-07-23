@@ -6,14 +6,39 @@ gap/SL/TP/partial-TP1/breakeven/time-stop, and produces the aggregated close res
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from bot.config.models import ExecutionCostsConfig
+from bot.core.timeframes import parse_hhmm, trading_day, vn30f_expiry
 from bot.core.types import Bar, Direction, InstrumentSpec, OrderStatus, StrategyName, TPRules
 from bot.engine import risk_manager
 from bot.filters.time_stop import is_expired
 
 EPS_R = 1e-9
+
+UTC = ZoneInfo("UTC")
+
+
+@dataclass(frozen=True)
+class MarketRules:
+    """Exchange rules the order engine must obey for one symbol (plan 05).
+
+    Defaults are the neutral FOREX/CRYPTO behavior: no settlement lock, no expiry --
+    so every pre-plan-05 call site keeps its exact semantics.
+    """
+
+    #: T+n settlement: a position may not be CLOSED until the release instant on the
+    #: n-th trading day after entry. None -> no lock (forex, crypto, futures).
+    settlement_trading_days: int | None = None
+    #: Local time on that day when the shares actually land (HOSE: afternoon session).
+    settlement_release_time: str = "13:00"
+    settlement_tz: str = "Asia/Ho_Chi_Minh"
+    #: Trading-day definition used for counting settlement days and dating expiry.
+    rollover_tz: str = "America/New_York"
+    rollover_time: str = "17:00"
+    #: VN30F1M: force-close any open position at the close of the expiry-day bar.
+    expiry_force_close: bool = False
 
 
 @dataclass
@@ -36,6 +61,15 @@ class OpenTrade:
     remaining_fraction: float = 1.0
     realized_pnl_amount: float = 0.0
     realized_pnl_r: float = 0.0
+    # Plan 05 (T+2.5). Trading days are COUNTED FROM THE BARS ACTUALLY SEEN rather
+    # than from the calendar: an exchange holiday simply has no bar, so it is skipped
+    # for free and no VN holiday calendar is needed.
+    entry_trading_day: date | None = None
+    last_seen_trading_day: date | None = None
+    trading_days_since_entry: int = 0
+    #: The trading day on which the shares land; fixed once reached, so the release
+    #: instant stays anchored to THAT day rather than being re-derived per bar.
+    settlement_release_day: date | None = None
 
 
 @dataclass
@@ -165,10 +199,69 @@ class OrderEngine:
         instrument: InstrumentSpec,
         intrabar_priority: str = "sl_first",
         costs: ExecutionCostsConfig | None = None,
+        rules: MarketRules | None = None,
     ) -> None:
         self.instrument = instrument
         self.priority = intrabar_priority
         self.costs = costs or ExecutionCostsConfig()
+        self.rules = rules or MarketRules()
+
+    def _bar_trading_day(self, bar: Bar) -> date:
+        return trading_day(bar.open_ts, self.rules.rollover_tz, self.rules.rollover_time)
+
+    def _track_settlement(self, trade: OpenTrade, bar: Bar) -> None:
+        """Advance the trade's settlement day counter once per NEW trading day, and
+        latch the release day the first time the counter reaches T+n."""
+        day = self._bar_trading_day(bar)
+        if trade.entry_trading_day is None:
+            trade.entry_trading_day = day
+            trade.last_seen_trading_day = day
+            trade.trading_days_since_entry = 0
+        elif trade.last_seen_trading_day != day:
+            trade.last_seen_trading_day = day
+            trade.trading_days_since_entry += 1
+
+        n = self.rules.settlement_trading_days
+        if n is not None and trade.settlement_release_day is None:
+            if trade.trading_days_since_entry >= n:
+                trade.settlement_release_day = day
+
+    def _settlement_released(self, trade: OpenTrade, bar: Bar) -> bool:
+        """True when the position may be closed. HOSE T+2.5: shares bought on T land in
+        the AFTERNOON session of T+2, so the release instant is
+        `settlement_release_time` local on the T+2 trading day -- the LATCHED day, not
+        the current bar's. Anchoring to the latched day is what keeps this right on
+        intraday timeframes: re-deriving it per bar would make a T+3 morning bar (which
+        closes before 13:00 on ITS own day) read as still-unsettled. Comparing
+        `bar.close_ts` against that instant is exact on any timeframe -- a 1D bar closes
+        well after 13:00 ICT, a T+2 morning bar does not."""
+        if self.rules.settlement_trading_days is None:
+            return True
+        if trade.settlement_release_day is None:
+            return False
+        tz = ZoneInfo(self.rules.settlement_tz)
+        release_local = datetime.combine(
+            trade.settlement_release_day, parse_hhmm(self.rules.settlement_release_time)
+        )
+        return bar.close_ts > release_local.replace(tzinfo=tz).astimezone(UTC)
+
+    def _maybe_expiry_close(
+        self, trade: OpenTrade, bar: Bar, events: list[TradeEventRecord]
+    ) -> ClosedResult | None:
+        """VN30F1M: a contract stops existing at expiry, so any position still open on
+        the expiry-day bar is closed at that bar's close (result classified normally,
+        F2). Expiry is the 3rd Thursday by calendar only -- see vn30f_expiry()."""
+        if not self.rules.expiry_force_close:
+            return None
+        day = self._bar_trading_day(bar)
+        if day != vn30f_expiry(day.year, day.month):
+            return None
+        events.append(
+            TradeEventRecord(
+                "expiry_close", bar.close_ts, bar.close, f"VN30F expiry {day.isoformat()}"
+            )
+        )
+        return self._finalize(trade, bar.close, bar.close_ts, events, "EXPIRY")
 
     def _pnl_amount(
         self, direction: Direction, entry: float, exit_price: float, lot: float
@@ -264,6 +357,11 @@ class OrderEngine:
         assert trade.status == OrderStatus.OPEN
         assert trade.entry_price is not None and trade.initial_sl_distance is not None
 
+        # Settlement bookkeeping runs on EVERY bar the trade is open, including its
+        # fill bar (which seeds entry_trading_day).
+        self._track_settlement(trade, bar)
+        released = self._settlement_released(trade, bar)
+
         active_tp = trade.tp1_price if not trade.tp1_hit else trade.tp2_price
         outcome1 = _bar_exit(
             trade.direction,
@@ -275,6 +373,24 @@ class OrderEngine:
             self.priority,
             bar.sub_path,
         )
+
+        # T+2.5 (user decision 2026-07-22): before the shares settle, the position
+        # CANNOT be exited -- an SL/TP touch is recorded and otherwise ignored, so the
+        # backtest carries the same un-cuttable risk the real market imposes rather
+        # than quietly booking an exit that could not have happened.
+        if outcome1 is not None and not released:
+            price_touched, kind_touched = outcome1
+            events.append(
+                TradeEventRecord(
+                    "exit_suppressed_settlement",
+                    bar.open_ts,
+                    price_touched,
+                    f"{kind_touched} touched but unsettled "
+                    f"(T+{self.rules.settlement_trading_days}, "
+                    f"day {trade.trading_days_since_entry} since entry)",
+                )
+            )
+            return BarOutcome(trade=trade, events=events, closed_result=None)
 
         if outcome1 is not None:
             price, kind = outcome1
@@ -323,9 +439,18 @@ class OrderEngine:
                     trade, price2, bar.open_ts, events, "BE" if kind2 == "SL" else "TP2"
                 )
                 return BarOutcome(trade=None, events=events, closed_result=closed)
+            # The remaining half survived TP1 -- it still cannot outlive the contract.
+            expired = self._maybe_expiry_close(trade, bar, events)
+            if expired is not None:
+                return BarOutcome(trade=None, events=events, closed_result=expired)
             return BarOutcome(trade=trade, events=events, closed_result=None)
 
-        # No exit this bar -- check time stop at bar.close (C5).
+        # No exit this bar -- expiry force-close first (the contract ceases to exist,
+        # which outranks the time stop), then the time stop at bar.close (C5).
+        expired = self._maybe_expiry_close(trade, bar, events)
+        if expired is not None:
+            return BarOutcome(trade=None, events=events, closed_result=expired)
+
         assert trade.entry_bar_ts is not None
         if time_stop_enabled and is_expired(
             trade.entry_bar_ts, bar.close_ts, time_stop_hours, trade.tp1_hit, time_stop_after_tp1

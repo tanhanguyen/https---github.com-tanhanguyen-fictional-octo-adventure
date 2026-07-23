@@ -326,11 +326,54 @@ class BotConfig(StrictModel):
             self.symbols = [SymbolEntry(symbol=self.symbol, symbol_type=self.symbol_type)]
         return self
 
+    @model_validator(mode="after")
+    def _apply_account_level_vn_profile(self) -> BotConfig:
+        """Plan 05, user decision 2026-07-22: a stock-VN run is a VND-denominated
+        account, so VN symbols may not share a run with USD-denominated ones --
+        `OrderEngine._pnl_amount` has no currency conversion (the USDJPY limitation
+        recorded for plan 04), so mixing would add VND P&L straight into a USD equity.
+
+        For an all-VN portfolio the ACCOUNT-level trading day switches to the
+        Asia/Ho_Chi_Minh calendar day (D10). Per-symbol fields live in
+        `bot.config.profiles` and are applied by `effective_config_for_symbol`."""
+        from bot.config.profiles import (  # local import: profiles imports nothing here
+            VN_ROLLOVER_TIME,
+            VN_ROLLOVER_TZ,
+            is_stock_vn,
+        )
+
+        types = {e.symbol_type for e in self.symbols if e.enabled}
+        if not types:
+            return self
+        vn = {t for t in types if is_stock_vn(t)}
+        if vn and vn != types:
+            raise ValueError(
+                "cannot mix stock VN symbols with FOREX/CRYPTO in one run: the VN "
+                "profile runs a VND account while FOREX/CRYPTO run a USD account, and "
+                f"the engine does not convert currencies (got {sorted(types)}). "
+                "`starting_equity` is read as VND for an all-VN portfolio."
+            )
+        # Assign only when it actually changes: `validate_assignment=True` re-runs this
+        # validator on every assignment, so an unconditional write would recurse.
+        if vn and self.trading_day_rollover_tz != VN_ROLLOVER_TZ:
+            self.trading_day_rollover_tz = VN_ROLLOVER_TZ
+        if vn and self.trading_day_rollover_time != VN_ROLLOVER_TIME:
+            self.trading_day_rollover_time = VN_ROLLOVER_TIME
+        return self
+
 
 def effective_config_for_symbol(base: BotConfig, entry: SymbolEntry) -> BotConfig:
-    """Deep-merge `entry.overrides` (+ symbol/symbol_type) onto `base`, producing the
-    per-symbol effective config main_loop/engine actually run against."""
+    """Deep-merge the SYMBOL_TYPE profile then `entry.overrides` (+ symbol/symbol_type)
+    onto `base`, producing the per-symbol effective config main_loop/engine actually run
+    against.
+
+    Precedence (plan 05): global config < symbol_type profile < per-symbol overrides.
+    The profile sits in the middle because VN market rules (D1 bars, no shorting cash,
+    2 concurrent trades, no daily-loss limit, no time stop, no DXY) are properties of
+    the market, not user preferences -- but a deliberate per-symbol override still wins.
+    FOREX/CRYPTO have an empty profile, so their behavior is bit-for-bit unchanged."""
     from bot.config.loader import deep_merge  # local import: loader imports models
+    from bot.config.profiles import profile_patch
 
     patch: dict[str, Any] = {
         "symbol": entry.symbol,
@@ -340,7 +383,8 @@ def effective_config_for_symbol(base: BotConfig, entry: SymbolEntry) -> BotConfi
     if "risk" in entry.overrides:
         patch["risk"] = entry.overrides["risk"]
     base_dict = base.model_dump(mode="json", exclude={"symbols"})
-    merged = deep_merge(base_dict, patch)
+    merged = deep_merge(base_dict, profile_patch(entry.symbol_type))
+    merged = deep_merge(merged, patch)
     return BotConfig.model_validate(merged)
 
 

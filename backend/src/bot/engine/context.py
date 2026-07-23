@@ -9,10 +9,15 @@ from datetime import datetime
 import pandas as pd
 
 from bot.config.models import BotConfig
+from bot.config.profiles import (
+    VN_CASH_SETTLEMENT_RELEASE_TIME,
+    VN_CASH_SETTLEMENT_TRADING_DAYS,
+    VN_ROLLOVER_TZ,
+)
 from bot.core.timeframes import higher_tf, tf_duration
 from bot.core.types import InstrumentSpec, NewsEventsIndex
 from bot.data.feed import Feed
-from bot.engine.order_engine import OpenTrade, OrderEngine
+from bot.engine.order_engine import MarketRules, OpenTrade, OrderEngine
 from bot.filters.base import FilterContext
 from bot.indicators.adx import adx
 from bot.indicators.atr import atr
@@ -55,6 +60,9 @@ class SymbolContext:
     cursor: datetime  # next bar-open to process on this symbol's own timeframe
     # Plan 06: this symbol's instrument currencies (news filter gate).
     currencies: tuple[str, ...] = ()
+    # Plan 05: full instrument spec -- main_loop sizes a provisional lot at decision
+    # time to reject signals that cannot afford one whole lot (stage `lot_below_min`).
+    instrument: InstrumentSpec | None = None
     trade: OpenTrade | None = None
     trade_db_id: int | None = None
 
@@ -75,6 +83,7 @@ def build_symbol_context(
         instrument,
         effective_config.risk.intrabar_priority,
         costs=effective_config.execution.costs,
+        rules=market_rules_for(effective_config),
     )
     first_ts = price_feed.frames[tf].index[0].to_pydatetime()
     return SymbolContext(
@@ -86,7 +95,31 @@ def build_symbol_context(
         breakout_state=BreakoutState.initial(),
         cursor=first_ts,
         currencies=instrument.currencies,
+        instrument=instrument,
     )
+
+
+def market_rules_for(effective_config: BotConfig) -> MarketRules:
+    """Plan 05: the exchange-level rules the order engine must obey for this symbol.
+    FOREX/CRYPTO get the neutral default (no settlement lock, no expiry)."""
+    rollover_tz = effective_config.trading_day_rollover_tz
+    rollover_time = effective_config.trading_day_rollover_time
+
+    if effective_config.symbol_type == "STOCK_VN_CASH":
+        return MarketRules(
+            settlement_trading_days=VN_CASH_SETTLEMENT_TRADING_DAYS,
+            settlement_release_time=VN_CASH_SETTLEMENT_RELEASE_TIME,
+            settlement_tz=VN_ROLLOVER_TZ,
+            rollover_tz=rollover_tz,
+            rollover_time=rollover_time,
+        )
+    if effective_config.symbol_type == "STOCK_VN_DERIV":
+        return MarketRules(
+            rollover_tz=rollover_tz,
+            rollover_time=rollover_time,
+            expiry_force_close=True,
+        )
+    return MarketRules(rollover_tz=rollover_tz, rollover_time=rollover_time)
 
 
 def build_context(
@@ -98,6 +131,7 @@ def build_context(
     lookback: int = LOOKBACK,
     news_events: NewsEventsIndex | None = None,
     instrument_currencies: tuple[str, ...] = (),
+    instrument: InstrumentSpec | None = None,
 ) -> FilterContext:
     primary = config.timeframe
     bars = price_feed.bars(primary, now, lookback)
@@ -175,4 +209,5 @@ def build_context(
         dxy_change_1h_pct=dxy_change,
         news_events=news_events,
         instrument_currencies=instrument_currencies,
+        instrument=instrument,
     )

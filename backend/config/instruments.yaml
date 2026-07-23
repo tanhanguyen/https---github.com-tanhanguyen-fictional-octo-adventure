@@ -53,3 +53,52 @@ instruments:
     lot_step: 0.01
     synthetic_start_price: 1900.0
     currencies: [XAU, USD]
+
+  # ---------------------------------------------------------------------------
+  # Stock VN (plan 05). Prices and P&L are in VND: an all-VN portfolio runs a VND
+  # account (`starting_equity` read as VND, mixing with FOREX/CRYPTO rejected by
+  # BotConfig) precisely so no currency conversion is needed anywhere.
+  #
+  # `min_lot = lot_step = 1` is what makes calculate_lot return WHOLE lots -- it
+  # already floors to lot_step and returns 0 below min_lot, so no special-casing.
+  # The same sizing-vs-P&L invariant as above applies: pip_value_per_lot ==
+  # pip x contract_size. HOSE tick sizes (50/100/500 VND bands) are NOT modelled --
+  # raw CSV prices are used (user decision 2026-07-22, deviation in decisions.md).
+  # ---------------------------------------------------------------------------
+  # Cash equity: 1 lot = 100 shares, price quoted in VND per share.
+  HPG:
+    symbol: HPG
+    symbol_type: STOCK_VN_CASH
+    contract_size: 100          # shares per lot (HOSE round lot)
+    pip: 1.0                    # 1 VND of share price
+    pip_value_per_lot: 100.0    # = pip (1) x contract_size (100)
+    spread_pips: 0.0
+    min_lot: 1                  # whole lots only
+    lot_step: 1
+    synthetic_start_price: 27000.0
+    currencies: [VND]
+  FPT:
+    symbol: FPT
+    symbol_type: STOCK_VN_CASH
+    contract_size: 100
+    pip: 1.0
+    pip_value_per_lot: 100.0
+    spread_pips: 0.0
+    min_lot: 1
+    lot_step: 1
+    synthetic_start_price: 95000.0
+    currencies: [VND]
+  # VN30 index future: multiplier 100,000 VND per index point, 1 contract per lot,
+  # tick 0.1 point. Margin is NOT simulated (deviation) -- sizing is pure
+  # MAX_RISK_PER_TRADE like every other instrument.
+  VN30F1M:
+    symbol: VN30F1M
+    symbol_type: STOCK_VN_DERIV
+    contract_size: 100000       # VND per index point
+    pip: 0.1                    # tick = 0.1 index point
+    pip_value_per_lot: 10000.0  # = pip (0.1) x contract_size (100000)
+    spread_pips: 0.0
+    min_lot: 1                  # whole contracts only
+    lot_step: 1
+    synthetic_start_price: 1250.0
+    currencies: [VND]

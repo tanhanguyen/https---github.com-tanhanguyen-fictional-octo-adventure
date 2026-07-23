@@ -12,7 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from bot.config.models import BotConfig
-from bot.core.types import FilterResult, OrderStatus, StrategyName
+from bot.core.types import DecisionOutcome, Direction, FilterResult, OrderStatus, StrategyName
+from bot.engine import risk_manager
 from bot.engine.decision_log import DecisionBundle, resolve_decision
 from bot.engine.order_engine import OpenTrade
 from bot.filters.base import FilterContext
@@ -111,6 +112,22 @@ def decide(
 
     outcome = resolve_decision(all_results, signal, strategy_candidate, regime_undecided)
 
+    # ALLOW_SHORT (deviation #12, D11): STOCK_VN_CASH has no short side. The signal is
+    # still generated and logged -- only the order is blocked. §8 vocabulary is kept
+    # (invariant #4): `no_signal` because on this market a SELL signal is, tradeably
+    # speaking, not a signal at all; `stage` carries the real reason.
+    if (
+        outcome.reason == "done"
+        and signal is not None
+        and signal.direction == Direction.SELL
+        and not config.risk.allow_short
+    ):
+        outcome = DecisionOutcome(
+            reason="no_signal",
+            stage="allow_short",
+            detail="SELL blocked: cash market",
+        )
+
     # A retest that fired but was vetoed downstream (wick/mtf/session/account_risk...)
     # must not burn the pending breakout: keep waiting for a better retest bar within
     # the same RETEST_MAX_BARS budget instead of silently resetting the state machine.
@@ -158,6 +175,47 @@ def decide(
         # PENDING order is always built for a `done` signal; if the eventual real-entry
         # lot rounds to zero, OrderEngine cancels it at fill.
         risk_multiplier = all_results["equity_curve"].values.get("risk_multiplier", 1.0)
+        risk_pct_effective = config.risk.max_risk_per_trade_pct * risk_multiplier
+
+        # Plan 05: whole-lot markets (VN cash = 100 shares, VN30F = 1 contract) can
+        # simply be unaffordable at the current equity. Size a PROVISIONAL lot off
+        # close[-1] -- the real entry is only known at fill -- and if it rounds below
+        # one lot, don't place an order at all. §8 vocabulary kept (invariant #4):
+        # `wait` because this is a "not enough capital for THIS setup right now"
+        # state that a later bar (different equity/SL distance) can clear; it is not
+        # an account-risk limit (`daily_loss_limit_reached`/
+        # `max_concurrent_trades_reached` would both misreport what happened).
+        # OrderEngine keeps its own cancel-at-fill backstop for the case where the
+        # real entry moves the lot to zero (plan 01 tech debt #1).
+        if ctx.instrument is not None:
+            provisional = risk_manager.calculate_lot(
+                ctx.equity,
+                risk_pct_effective,
+                1.0,
+                abs(float(ctx.close.iloc[-1]) - sl),
+                ctx.instrument,
+            )
+            if provisional.lot <= 0:
+                bundle = DecisionBundle(
+                    outcome=DecisionOutcome(
+                        reason="wait",
+                        stage="lot_below_min",
+                        detail=(
+                            f"risk {risk_pct_effective:.3f}% of equity "
+                            f"{ctx.equity:.2f} buys less than min_lot "
+                            f"{ctx.instrument.min_lot:g}"
+                        ),
+                    ),
+                    filter_results=all_results,
+                    signal=signal,
+                    strategy=used_strategy,
+                )
+                return MainLoopResult(
+                    bundle=bundle,
+                    open_trade_candidate=None,
+                    breakout_state=new_breakout_state,
+                )
+
         open_trade = OpenTrade(
             local_id=0,
             symbol=config.symbol,
@@ -166,7 +224,7 @@ def decide(
             status=OrderStatus.PENDING,
             sl=sl,
             tp_rules=tp_rules,
-            risk_pct_effective=config.risk.max_risk_per_trade_pct * risk_multiplier,
+            risk_pct_effective=risk_pct_effective,
         )
 
     bundle = DecisionBundle(

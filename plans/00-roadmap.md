@@ -23,7 +23,7 @@ C1–C12, 14 deviations). **Ràng buộc xuyên suốt: không tự thêm chiế
 | 09 | [09-ops-polish.md](09-ops-polish.md) | Docker, auth token, logging, frontend tests | 03 (bất kỳ lúc nào sau đó) |
 | 10 | [10-forex.md](10-forex.md) | (Nâng cao) Forex: data + venue — đề xuất OANDA v20, không cần Windows/MT5 | 07 (08 nếu lệnh thật) |
 | 11 | [11-optimization.md](11-optimization.md) | (Nâng cao) Sweep tham số + walk-forward, báo cáo overfit | 02, 03 |
-| 12 | [12-execution-realism.md](12-execution-realism.md) | (Nâng cao) Funding fee, margin guard, websocket, hiệu chỉnh slippage — 4 mục độc lập | 02/07/08 tuỳ mục |
+| 12 | [12-execution-realism.md](12-execution-realism.md) | (Nâng cao) Funding fee, margin guard, websocket, hiệu chỉnh slippage, **12e: độ thật chứng khoán VN** — 5 mục độc lập | 02/07/08 tuỳ mục (12e sau 05) |
 | 13 | [13-alerts.md](13-alerts.md) | Alert center: Telegram + toast web UI + bảng alert DB, một event bus chung | 03 (Telegram dùng chung 07) |
 | 14 | [14-chart-snapshot.md](14-chart-snapshot.md) | Ảnh chart ~100 nến + indicator + entry/SL/TP lúc mở/đóng lệnh để audit | 03; chụp tự động cần 07 |
 
@@ -75,6 +75,14 @@ plan 04 mở rộng overrides cho phép **`risk.max_risk_per_trade_pct` per-symb
 EURUSD (London+NY), GBPUSD (London), USDJPY + USDCAD (NY), XAUUSD (chỉ overlap, risk nửa
 mức) — bảng đầy đủ + quy tắc "tối đa 2 lệnh cùng hướng USD" ở plan 10 mục
 "Cặp khuyến nghị theo phiên"; whitelist chính là mảng `symbols` của plan 04, không cần cơ chế mới.
+
+Quyết định user (2026-07-22, plan 05 — chứng khoán VN): (a) **T+2.5 chặn thoát lệnh**
+(SL/TP không kích trước khi hàng về, chỉ ghi `exit_suppressed_settlement`); (b) VN30F
+**chỉ D1**, không định nghĩa bar H4 trên phiên VN; (c) **tài khoản VND riêng**, cấm trộn
+symbol VN với FOREX/CRYPTO trong một run; (d) không đủ 1 lô nguyên → `wait`/`lot_below_min`;
+(e) chuỗi VN30F liên tục bằng **script `stitch_vn30f.py`** ngoài engine; (f) chấp nhận cả 4
+đơn giản hoá (tick HOSE, trần/sàn ±7%, đáo hạn thuần lịch, không margin) — **gom thành plan
+nâng cao 12e**. Chi tiết + lý do: `docs/decisions.md` mục "Plan 05".
 
 ## Bất biến (in vào đầu mọi plan — Sonnet, Opus phải giữ)
 

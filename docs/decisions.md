@@ -78,6 +78,13 @@ Cả ADX lẫn ER disabled → điều kiện regime mặc định đúng → nh
 12. `ALLOW_SHORT` — khái niệm mới, bắt buộc cho STOCK_VN_CASH.
 13. **`ONE_TRADE_PER_SYMBOL=true` chặn lệnh** → emit `reason="max_concurrent_trades_reached"`, `stage="one_trade_per_symbol"` — giữ từ vựng §8 khả tri trên 1 symbol.
 14. **Xác nhận lag dùng ngữ nghĩa §6.1** (`close_confirm > close_signal` cho BUY), không phải "nến xanh" (`close > open`) của §5 — hai định nghĩa mâu thuẫn trong spec, chọn §6.1 vì nó là mục "chi tiết công thức".
+15. **`lot_below_min`** — không đủ vốn cho 1 lô nguyên → `reason="wait"`, `stage="lot_below_min"` (plan 05).
+16. **Bỏ làm tròn tick HOSE** — dùng giá CSV thô, không làm tròn về bước giá 50/100/500đ (plan 05).
+17. **Bỏ trần/sàn ±7% HOSE** — không mô phỏng giới hạn biên độ khi giá gap (plan 05).
+18. **Đáo hạn VN30F chỉ theo lịch** — thứ Năm tuần 3, không xử lý ngày nghỉ lễ (plan 05).
+19. **Không mô phỏng margin VN30F** — risk theo `MAX_RISK_PER_TRADE` như mọi instrument khác (plan 05).
+20. **Tài khoản VND tách biệt cho stock VN** — cấm trộn symbol VN với FOREX/CRYPTO trong một run (plan 05).
+21. **T+2.5 chặn thoát lệnh** — SL/TP không kích hoạt trước khi hàng về, chỉ ghi `exit_suppressed_settlement` (plan 05).
 
 ## Phân loại kết quả (F2)
 
@@ -369,3 +376,125 @@ từ file lịch kinh tế đã export (user tự tải, KHÔNG scrape/gọi API
 
 Golden hash không đổi (`filters.news.enabled=false` mặc định) — xác nhận bằng
 `tests/integration/test_replay_golden*.py` chạy lại sau plan này, không cần re-pin.
+
+## Plan 05 — Chứng khoán VN: STOCK_VN_CASH + STOCK_VN_DERIV (2026-07-22)
+
+Hai symbol_type còn lại của D11 chạy đầy đủ trong backtest. **Mọi ❓ của plan đã được user
+chốt trước khi code** (yêu cầu cuối plan 05) — các quyết định ghi ngay dưới đây.
+
+### Quyết định user (2026-07-22)
+
+| # | Điểm | Chốt |
+|---|---|---|
+| 1 | Mô hình T+2.5 | **Chặn thoát lệnh** tới phiên chiều ngày giao dịch thứ 2 sau entry; giá chạm SL/TP trong khoảng đó chỉ ghi `exit_suppressed_settlement` — backtest trung thực với rủi ro không cắt được |
+| 2 | Khung VN30F | **Chỉ D1**, KHÔNG định nghĩa bar H4 trên phiên VN (không thêm `resample_origin`) |
+| 3 | Tiền tệ | **Tài khoản VND riêng**; `starting_equity` đọc là VND khi mọi symbol là VN; **cấm trộn** VN với FOREX/CRYPTO trong một run |
+| 4 | Không đủ 1 lô nguyên | `reason="wait"`, `stage="lot_below_min"` (sai lệch #15) |
+| 5 | Chuỗi VN30F liên tục | **Script `scripts/stitch_vn30f.py`** ngoài engine, xuất chuỗi back-adjusted |
+| 6 | Đơn giản hoá | Bỏ cả 4: tick HOSE, trần/sàn ±7%, lịch nghỉ lễ cho đáo hạn, margin VN30F (sai lệch #16–19) — **user ghi chú: gom thành một plan nâng cao cho phái sinh VN**, xem `plans/12-execution-realism.md` mục "12e" |
+
+### Triển khai
+
+1. **Ngày giao dịch VN = ngày lịch Asia/Ho_Chi_Minh (D10)** — `trading_day()` được viết lại
+   theo **shift modulo**: `(24h − rollover) mod 24h`, cộng vào giờ địa phương rồi lấy `.date()`.
+   Cách cũ (`if local.time() >= rollover: +1 ngày`) **hỏng ở mốc nửa đêm**: `>= 00:00` luôn
+   đúng nên MỌI timestamp bị đẩy lên một ngày. Với 17:00 NY công thức mới cho kết quả **y hệt**
+   cách cũ ở mọi mốc (kể cả đúng 17:00:00 và hai chiều DST) nên forex/crypto không đổi hành vi.
+   `trading_day_start_local()` là mốc BẮT ĐẦU của ngày giao dịch (17:00 hôm trước / 00:00 hôm
+   đó) — `resample_trading_day`/`resample_trading_week` neo bar theo hàm này thay vì hardcode
+   "hôm trước". Test: `test_stock_vn.py::test_midnight_rollover_does_not_shift_every_bar_forward`.
+2. **Bar D1 an toàn cho VN** — cả phiên (02:00–07:45 UTC) nằm gọn trong một ngày UTC *và* một
+   ngày ICT, nên gom theo lưới nào cũng ra cùng bar; có test đối chiếu hai lưới
+   (`test_vn_daily_bar_grid_is_identical_under_utc_and_ict_days`).
+3. **Profile theo SYMBOL_TYPE** (`bot/config/profiles.py`, MỚI) — thứ tự ưu tiên:
+   **config toàn cục < profile < `overrides` per-symbol**. Profile nằm giữa vì luật thị trường
+   VN là thuộc tính của thị trường, không phải sở thích user: người đặt `timeframe: 15m` cho
+   forex không được vô tình chạy HPG trên 15m. Profile VN đặt: `timeframe=1D`, rollover
+   ICT/00:00, `account_risk.max_concurrent_trades=2`, `daily_loss_limit_enabled=false` (D10),
+   `time_stop.enabled=false` (TF > H1), `dxy.enabled=false` (§6.6 là forex), `allow_short=false`
+   cho CASH / `true` cho DERIV. **FOREX/CRYPTO có profile RỖNG** → hành vi và golden stream
+   không đổi (có test canh: `test_forex_profile_is_empty_so_defaults_are_untouched`).
+4. **Cấm trộn VND/USD** — validator trên `BotConfig` raise nếu danh sách symbol vừa có VN vừa
+   có FOREX/CRYPTO. Lý do là giới hạn kiến trúc đã ghi ở plan 04: `OrderEngine._pnl_amount`
+   không quy đổi tiền tệ (bug USDJPY), nên trộn sẽ cộng thẳng P&L VND vào equity USD. Khi
+   portfolio toàn VN, validator cũng đặt rollover tài khoản về ICT/00:00 (Runner đọc rollover
+   từ config gốc, không phải per-symbol). Validator ghi có điều kiện (`if != giá trị đích`) vì
+   `validate_assignment=True` sẽ chạy lại validator sau mỗi phép gán → gán vô điều kiện là đệ quy.
+5. **`instruments.yaml`** — HPG/FPT (lô 100 cp, `pip=1` VND, `pip_value_per_lot=100`) và
+   VN30F1M (`contract_size=100_000` VND/điểm, `pip=0.1`, `pip_value_per_lot=10_000`). Cả ba giữ
+   **bất biến sizing↔P&L** `pip_value_per_lot == pip × contract_size` (có test). **Lô nguyên
+   không cần code mới**: `min_lot = lot_step = 1` là đủ — `calculate_lot` vốn đã floor theo
+   `lot_step` và trả 0 khi dưới `min_lot`.
+6. **`lot_below_min` (sai lệch #15)** — `main_loop` tính **lô tạm** tại thời điểm quyết định
+   (entry ước lượng = `close[-1]`); nếu dưới 1 lô thì KHÔNG đặt lệnh, emit `wait/lot_below_min`.
+   `FilterContext`/`SymbolContext` mang thêm `instrument` để làm việc này (không filter nào đọc,
+   chỉ là dữ liệu thuần → bất biến #6 giữ nguyên). Backstop cũ ở `OrderEngine` (huỷ PENDING khi
+   lô làm tròn về 0 tại giá khớp thật) **vẫn giữ** cho trường hợp entry thật đổi kết quả.
+   *Đây là thay đổi hành vi cho MỌI symbol_type* (trước đây lệnh vẫn được đặt rồi bị huỷ lúc
+   khớp): trên forex mặc định gần như không kích được (equity 500, min_lot 0.01), và golden test
+   chỉ so determinism giữa 2 lần chạy chứ không ghim hằng số nên không cần re-pin.
+7. **`ALLOW_SHORT` (sai lệch #12)** — chặn ở `main_loop` sau `resolve_decision`: tín hiệu SELL
+   vẫn sinh ra và vẫn được ghi log (UI thấy được), chỉ lệnh bị chặn → `reason="no_signal"`,
+   `stage="allow_short"`, detail `"SELL blocked: cash market"`. Chọn `no_signal` vì với thị
+   trường không có chiều bán thì tín hiệu SELL coi như không tồn tại; từ vựng §8 giữ nguyên
+   (bất biến #4). Chặn theo **hướng lệnh**, không phải veto toàn cục — có test cho BUY.
+8. **T+2.5 (sai lệch #21)** — `MarketRules` (mới, `order_engine.py`) mang luật sàn cho từng
+   symbol; mặc định là hành vi forex/crypto cũ (không settlement, không đáo hạn) nên mọi call
+   site trước plan 05 không đổi. Cơ chế: mỗi bar tăng `trading_days_since_entry` khi **ngày
+   giao dịch của bar đổi** — tức **đếm theo bar có thật trong dữ liệu**, nên ngày nghỉ lễ (không
+   có bar) tự động được bỏ qua, KHÔNG cần lịch nghỉ lễ VN. Được bán khi
+   `trading_days_since_entry >= 2` **và** `bar.close_ts` vượt mốc 13:00 ICT của **ngày T+2 đã
+   chốt** (`settlement_release_day`, latch một lần khi bộ đếm chạm 2) — không phải 13:00 của
+   ngày bar hiện tại. Chốt ngày như vậy vì nếu tính lại theo bar thì trên khung intraday một bar
+   sáng ngày T+3 (đóng trước 13:00 của chính nó) lại bị coi là chưa về hàng → lệnh kẹt vĩnh viễn.
+   Viết theo mốc thời gian thật nên đúng trên mọi timeframe, không chỉ D1.
+   *Giới hạn độ phân giải D1*: một bar D1 phủ cả phiên sáng lẫn phiên chiều, nên toàn bộ bar
+   ngày T+2 được coi là đã về hàng — nếu giá chạm SL trong phiên SÁNG ngày T+2 thì backtest vẫn
+   ghi exit, dù thực tế phải đợi tới phiên chiều. Sai số tối đa nửa phiên và chỉ ở đúng một bar
+   mỗi lệnh; muốn chính xác phải chạy khung intraday (mã đã đúng sẵn cho trường hợp đó).
+   Chưa được bán mà giá
+   chạm SL/TP → ghi `exit_suppressed_settlement` và **giữ lệnh** (time stop cũng bị bỏ qua:
+   không bán được thì không time-stop được).
+9. **Đáo hạn VN30F (sai lệch #18)** — `vn30f_expiry(year, month)` trong `core/timeframes.py`
+   (thứ Năm tuần 3, thuần lịch). Vị thế còn mở trên bar ngày đáo hạn bị **force-close tại close
+   của bar** đó: event `expiry_close` + `CLOSED` kind `EXPIRY`, result phân loại bình thường
+   (F2). Thứ tự ưu tiên trong `process_bar`: SL/TP thật > đáo hạn > time stop (chạm SL trong
+   phiên đáo hạn thì đó mới là exit thật). *Lưu ý quy ước timestamp*: bar D1 VN được đánh dấu
+   theo giờ MỞ phiên (09:00 ICT) nên `close_ts` của bar đáo hạn rơi vào 09:00 ICT phiên KẾ TIẾP
+   — đúng quy ước `bar.close_ts` mà time stop đã dùng từ trước, không phải lỗi off-by-one.
+10. **Filter `session` với bar D1 (sai lệch có chủ đích)** — quyết định trên khung 1D được lấy
+    tại `close` của bar = 00:00 ICT, tức **nằm ngoài mọi cửa sổ phiên** → nếu so thẳng thì
+    filter chặn **100% số bar**. Bar D1/1W bao trọn phiên nên chính nó *là* phiên: filter trả
+    `passed=True` kèm `values.bar_spans_session=true`. Giới hạn phạm vi **chỉ cho STOCK_VN_***
+    để không đụng hành vi/golden của forex (có test canh cả hai chiều). Cửa sổ 2 khoảng
+    (09:00–11:30 + 13:00–14:30, D9) vẫn áp dụng nguyên vẹn trên khung intraday — có test
+    parametrize 8 mốc giờ, gồm cả giờ nghỉ trưa.
+11. **`account_risk` minh bạch hoá** — dòng decision giờ luôn kèm `daily_loss_limit_enabled` và
+    `max_concurrent_trades` trong `values` (D10 yêu cầu "ghi `enabled=false` cho minh bạch"),
+    thay vì để UI thấy một hạn mức không bao giờ kích mà không rõ vì sao.
+12. **`scripts/stitch_vn30f.py`** — nối các file hợp đồng riêng lẻ + lịch roll thành MỘT chuỗi
+    back-adjusted (phương pháp **hiệu số/panama**, duyệt ngược từ hợp đồng mới nhất). Chọn hiệu
+    số chứ không phải tỷ lệ vì P&L VN30F tuyến tính theo điểm (100.000 VND/điểm) — điều chỉnh
+    tỷ lệ sẽ bóp méo khoảng cách điểm, tức bóp méo ATR/SL/R. Giá tuyệt đối của bar cũ **không
+    còn là giá giao dịch thật**, nhưng mọi **hiệu giá** (thứ duy nhất chiến lược dùng) là trung
+    thực. Engine không biết gì về roll — đúng chủ trương "roll là bước chuẩn bị dữ liệu".
+
+### Kiểm chứng
+
+- `tests/unit/test_stock_vn.py` (35 test): ngày giao dịch VN, lưới D1 UTC-vs-ICT, đáo hạn
+  (parametrize 5 tháng gồm tháng bắt đầu bằng thứ Năm), profile 2 chiều, cấm trộn tiền tệ, phiên
+  2 khoảng + bypass D1, lô nguyên, T+2.5 (chặn → thả, cuối tuần, TP sau khi thả, và **forex
+  không bị chặn**), đáo hạn (force-close, SL thắng đáo hạn, cash không bị force-close).
+- `tests/unit/test_stock_vn_decisions.py` (8 test): chặn SELL trên cash **có control là cùng
+  setup trên VN30F vẫn `done`**, `lot_below_min` có/không, context không có instrument.
+- `tests/integration/test_replay_golden_stock_vn.py` (11 test): golden run cho **mỗi**
+  symbol_type trên fixture D1 cố định (600 bar ngày, ~2,4 năm — **đủ dài để EMA89 trên khung
+  xác nhận 1W hết warmup**, đúng cảnh báo của plan; file ngắn hơn sẽ kẹt `wait/warmup` mãi mãi).
+  Ngoài determinism còn assert luật thị trường **trên bảng trade/trade_event thật**: cash không
+  bao giờ mở SELL, cash không bao giờ thoát trước T+2, không vị thế VN30F nào sống qua đáo hạn,
+  lô luôn nguyên, `session` không chặn bar nào.
+- Histogram lý do trên fixture (600 bar): cash `wait 357 / no_signal 194 / off 41 /
+  max_concurrent 6 / done 2`, warmup 88 bar đầu — phễu tín hiệu hẹp đúng như đã ghi ở mục
+  "Sửa phễu tín hiệu" (breakout chỉ arm trong regime trend), không phải lỗi chặn hệ thống.
+- Golden forex/crypto **không đổi**: profile FOREX rỗng, `test_replay_golden*.py` chạy lại
+  xanh, không cần re-pin.

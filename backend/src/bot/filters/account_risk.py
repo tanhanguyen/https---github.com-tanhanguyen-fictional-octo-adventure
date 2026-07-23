@@ -99,6 +99,11 @@ def evaluate(ctx: FilterContext) -> FilterResult:
         values={
             "open_trades_count": ctx.open_trades_count,
             "daily_loss_count": ctx.daily_loss_count,
+            # D10: stock VN disables the daily-loss limit. Reported on every decision
+            # row (not just when it blocks) so the UI can show WHY the limit never
+            # fires, instead of it silently looking broken.
+            "daily_loss_limit_enabled": cfg.daily_loss_limit_enabled,
+            "max_concurrent_trades": cfg.max_concurrent_trades,
         },
         detail="ok",
     )

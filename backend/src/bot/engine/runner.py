@@ -220,6 +220,7 @@ class Runner:
                 account,
                 news_events=self.news_events,
                 instrument_currencies=sc.currencies,
+                instrument=sc.instrument,
             )
             ml = main_loop.decide(ctx, sc.breakout_state, sc.effective_config)
             sc.breakout_state = ml.breakout_state

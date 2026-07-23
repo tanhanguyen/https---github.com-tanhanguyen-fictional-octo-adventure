@@ -15,7 +15,14 @@ from typing import Any
 import pandas as pd
 
 from bot.config.models import BotConfig
-from bot.core.types import Direction, FilterKind, FilterResult, NewsEventsIndex, Signal
+from bot.core.types import (
+    Direction,
+    FilterKind,
+    FilterResult,
+    InstrumentSpec,
+    NewsEventsIndex,
+    Signal,
+)
 
 __all__ = ["FilterContext", "FilterResult", "FilterKind", "disabled_result", "warmup_result"]
 
@@ -78,6 +85,11 @@ class FilterContext:
     # once by the Runner); `instrument_currencies` is this symbol's own profile.
     news_events: NewsEventsIndex | None = None
     instrument_currencies: tuple[str, ...] = ()
+
+    # Plan 05: the symbol's instrument spec, needed by main_loop to reject a `done`
+    # decision whose position would round below one whole lot (VN: 100 shares / 1
+    # contract). No filter reads it -- it stays pure data on the shared context.
+    instrument: InstrumentSpec | None = None
 
     extra: dict[str, Any] = field(default_factory=dict)
 

@@ -64,6 +64,33 @@
 - ❓ Ngưỡng dữ liệu tối thiểu trước khi tin số liệu — đề xuất ≥ 30 fill/symbol.
 - Test: script trên DB dựng tay ra đúng phân bố; không mạng.
 
+## 12e. Độ thật của chứng khoán VN (user chốt 2026-07-22 — hoãn khỏi plan 05)
+
+Plan 05 đã cố ý bỏ 4 điểm dưới đây (sai lệch #16–#19 trong `docs/decisions.md`) để giữ
+phạm vi; user yêu cầu **ghi lại thành một plan nâng cao cho chứng khoán/phái sinh VN**.
+Bốn mục độc lập nhau, làm rời từng mục được:
+
+- **Trần/sàn ±7% HOSE** — clamp giá khớp trong biên độ quanh giá tham chiếu (close phiên
+  trước). Chỗ sửa: `OrderEngine.process_bar` cần biết close phiên trước → thêm vào `Bar`
+  hoặc tra từ feed. Chỉ ảnh hưởng các phiên gap mạnh — hiếm trên D1, nhưng đúng vào những
+  phiên rủi ro nhất, nên đây là mục **ưu tiên cao nhất** trong 4 mục theo tiêu chí
+  ít-lỗ-ít-sự-cố (hiện backtest cho phép khớp ở mức giá thị trường thật sẽ chặn lại).
+- **Lịch nghỉ lễ cho đáo hạn VN30F** — `vn30f_expiry()` hiện thuần lịch (thứ Năm tuần 3).
+  Nâng cấp: nhận danh sách ngày nghỉ (`config/vn_holidays.yaml`), lùi về phiên giao dịch
+  liền trước khi trùng nghỉ. Rủi ro nếu bỏ qua: force-close sai ngày → lệch toàn bộ chuỗi
+  trade sau đó. Khi chạy live (plan 07/08) đã có đường vá: đối chiếu `expirationDate` từ
+  DNSE Entrade API và **tin API** — nên mục này chủ yếu cho backtest.
+- **Margin VN30F** — ký quỹ ban đầu theo % giá trị hợp đồng + guard chặn lệnh khi không đủ
+  ký quỹ, cảnh báo call margin. Song song 12b (margin guard crypto futures) — nên dùng
+  chung một abstraction thay vì viết hai lần.
+- **Bước giá (tick) HOSE** — làm tròn entry/SL/TP về bảng giá thật (kiểm lại quy định hiện
+  hành trước khi code: plan 05 ghi 50/100/500đ theo mô tả cũ). Chỗ sửa: `round_to_tick(price,
+  instrument)` gọi khi chốt entry/SL/TP + `tick_table` trong `InstrumentSpec`. Tác động nhỏ
+  nhất trong 4 mục (sai số ≤ 1 tick) nhưng đổi golden stream của mọi run VN → nghi thức re-pin.
+
+Phụ thuộc: plan 05. Không mục nào bắt buộc để backtest VN chạy được — chúng chỉ thu hẹp
+khoảng cách backtest ↔ thị trường thật.
+
 ## Definition of done
 
 - Mỗi mục làm xong tự khép: test/mypy/ruff xanh, decisions.md có mục tương ứng,
