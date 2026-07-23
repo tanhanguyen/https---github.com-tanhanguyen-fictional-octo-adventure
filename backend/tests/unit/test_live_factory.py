@@ -11,6 +11,7 @@ from test_live_runner import FakeSource, base_bars
 from bot.config.loader import load_default_config
 from bot.config.models import BotConfig, SymbolEntry
 from bot.core.errors import ConfigError
+from bot.data.dnse_feed import DNSE_OPENAPI_BASE, DnseOhlcFeed
 from bot.db import repositories as repo
 from bot.db.connection import connect_and_migrate
 from bot.engine.live_factory import build_live_session, default_live_db_path
@@ -120,12 +121,100 @@ def test_restart_clears_a_stale_stop_flag(tmp_path):
         second.close()
 
 
-def test_forex_and_vn_are_refused_until_their_feeds_exist(tmp_path):
+def test_forex_is_refused_until_its_feed_exists(tmp_path):
     cfg = load_default_config().model_copy(
         update={"symbols": [SymbolEntry(symbol="EURUSD", symbol_type="FOREX")]}
     )
     with pytest.raises(ConfigError, match="not implemented"):
         make(tmp_path / "live.db", config=cfg)
+
+
+@pytest.mark.parametrize(
+    ("symbol", "symbol_type"), [("HPG", "STOCK_VN_CASH"), ("VN30F1M", "STOCK_VN_DERIV")]
+)
+def test_vn_spot_and_derivatives_are_accepted_live(tmp_path, symbol, symbol_type):
+    """DNSE serves OHLC for both cổ phiếu and phái sinh, so neither is refused any more.
+    The VN profile forces 1D, which is what the source factory must be handed."""
+    cfg = load_default_config().model_copy(
+        update={
+            "symbol": symbol,
+            "symbol_type": symbol_type,
+            "starting_equity": 500_000_000.0,  # VND account (plan 05 decision #3)
+            "symbols": [SymbolEntry(symbol=symbol, symbol_type=symbol_type)],
+        }
+    )
+    seen: list[tuple[str, str]] = []
+
+    def vn_sources(sym: str, timeframe: str) -> FakeSource:
+        seen.append((sym, timeframe))
+        return FakeSource(base_bars(400, 7), timeframe=timeframe, symbol=sym)
+
+    session = build_live_session(
+        db_path=str(tmp_path / "live.db"),
+        source_factory=vn_sources,
+        notifier=LogNotifier(),
+        now_fn=lambda: NOW,
+        sleep_fn=lambda _s: None,
+        config=cfg,
+    )
+    try:
+        assert seen == [(symbol, "1D")]
+        assert list(session.runner.symbols) == [symbol]
+    finally:
+        session.close()
+
+
+def test_vn_live_wires_the_dnse_feed_and_records_it_as_the_venue(tmp_path, monkeypatch):
+    """No `source_factory` here: this is the real wiring path, so a VN symbol must build
+    a `DnseOhlcFeed` (with the right `type`) and record DNSE as the dataset venue —
+    otherwise the resume-time venue-swap guard would compare against Binance's URL."""
+    monkeypatch.setenv("DNSE_API_KEY", "k")
+    monkeypatch.setenv("DNSE_API_SECRET", "s")
+    cfg = load_default_config().model_copy(
+        update={
+            "symbol": "VN30F1M",
+            "symbol_type": "STOCK_VN_DERIV",
+            "starting_equity": 500_000_000.0,
+            "symbols": [SymbolEntry(symbol="VN30F1M", symbol_type="STOCK_VN_DERIV")],
+        }
+    )
+    session = build_live_session(
+        db_path=str(tmp_path / "live.db"),
+        notifier=LogNotifier(),
+        now_fn=lambda: NOW,
+        sleep_fn=lambda _s: None,
+        config=cfg,
+    )
+    try:
+        source = session.runner.symbols["VN30F1M"].source
+        assert isinstance(source, DnseOhlcFeed)
+        assert source.market_type == "DERIVATIVE"
+        assert source.timeframe == "1D"
+        stored = repo.get_run_symbol_datasets(session.conn, session.run_id)
+        assert stored["VN30F1M"].startswith(f"live:{DNSE_OPENAPI_BASE}:VN30F1M:")
+    finally:
+        session.close()
+
+
+def test_vn_live_without_credentials_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.delenv("DNSE_API_KEY", raising=False)
+    monkeypatch.delenv("DNSE_API_SECRET", raising=False)
+    cfg = load_default_config().model_copy(
+        update={
+            "symbol": "HPG",
+            "symbol_type": "STOCK_VN_CASH",
+            "starting_equity": 500_000_000.0,
+            "symbols": [SymbolEntry(symbol="HPG", symbol_type="STOCK_VN_CASH")],
+        }
+    )
+    with pytest.raises(ConfigError, match="DNSE_API_KEY"):
+        build_live_session(
+            db_path=str(tmp_path / "live.db"),
+            notifier=LogNotifier(),
+            now_fn=lambda: NOW,
+            sleep_fn=lambda _s: None,
+            config=cfg,
+        )
 
 
 def test_default_db_path_follows_the_env_override(tmp_path, monkeypatch):

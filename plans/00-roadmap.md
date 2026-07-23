@@ -34,9 +34,15 @@ Plan 10–12 là **nâng cao** — nằm ngoài định nghĩa "app hoàn chỉn
 Plan 13–14 là **yêu cầu user 2026-07-18** (alert đa kênh + audit visual) — nên làm sau 03,
 trước hoặc song song 07.
 
-Tài nguyên user đã cung cấp: **DNSE Entrade API** (giao dịch phái sinh VN, có môi trường
-papertrade, KHÔNG có dữ liệu nến) — <https://hdsd2.entrade.com.vn/entrade-api>; chi tiết
-đã phân tích trong plan 08, tham chiếu ở plan 05 (lịch đáo hạn) và 07 (venue).
+Tài nguyên user đã cung cấp — **hai hệ thống DNSE khác nhau, đừng lẫn**:
+
+- **DNSE Entrade API** (<https://hdsd2.entrade.com.vn/entrade-api>) — *giao dịch* phái sinh
+  VN, có môi trường papertrade, **KHÔNG có dữ liệu nến**. Dùng cho plan 08 (đặt lệnh) và
+  plan 05 (lịch đáo hạn).
+- **DNSE OpenAPI / LightSpeed** (<https://developers.dnse.com.vn>) — *dữ liệu thị trường*,
+  **CÓ đầy đủ OHLC** cho cổ phiếu, phái sinh và chỉ số: REST `GET /price/ohlc` (lịch sử) +
+  WebSocket `ohlc_closed` (realtime). Đã triển khai (2026-07-23) làm feed live cho cả
+  `STOCK_VN_CASH` và `STOCK_VN_DERIV` — xem `docs/decisions.md` mục "Plan 07b".
 
 Quyết định user (2026-07-18): crypto chỉ làm **futures**, không spot; venue đầu tiên là
 **Binance USDⓈ-M Futures** (klines công khai cho plan 07, testnet demo realtime + live

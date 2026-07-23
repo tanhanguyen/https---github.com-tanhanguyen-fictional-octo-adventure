@@ -94,8 +94,28 @@ BOT_DB_PATH=data/live.db ./.venv/bin/python -m bot.cli live
 - Dừng: `POST /api/live/stop` (đặt cờ `run.stop_requested`, runner kiểm mỗi vòng lặp), hoặc Ctrl-C.
 - Theo dõi: `GET /api/live/status` (lag, feed_state, uptime, equity) — dashboard hiện badge LIVE.
 
-Chỉ CRYPTO có feed live ở plan này. FOREX là plan 10; VN30F cần nguồn nến do user chỉ định
-(API DNSE Entrade chỉ có giao dịch/tài sản, không có endpoint OHLC).
+Feed live hiện có: **CRYPTO** qua Binance USDⓈ-M Futures, và **chứng khoán VN — cả spot
+(`STOCK_VN_CASH`) lẫn phái sinh (`STOCK_VN_DERIV`)** qua **DNSE OpenAPI**
+(`GET /price/ohlc`, docs: <https://developers.dnse.com.vn>). Chỉ FOREX còn chờ plan 10.
+
+DNSE cần credentials trong môi trường — thiếu thì run live VN **từ chối khởi động**
+(fail-closed), không chạy mù:
+
+```bash
+export DNSE_API_KEY=...
+export DNSE_API_SECRET=...
+```
+
+Tải lịch sử OHLC về CSV chuẩn để backtest (cổ phiếu / phái sinh / chỉ số):
+
+```bash
+cd backend && ./.venv/bin/python -m scripts.fetch_dnse_ohlc --symbol VN30F1M --type DERIVATIVE --resolution 1D --from 2018-01-01 --out data/csv/VN30F1M_1D.csv
+```
+
+Hai điểm dễ sai đã được xử lý sẵn trong feed (chi tiết + danh sách "cần xác minh khi có
+API key" ở `docs/decisions.md`, mục "Plan 07b"): giá **cổ phiếu** DNSE tính bằng **nghìn
+VND** nên được nhân 1000 về VND nguyên, và nến **D1** được neo về **09:00 ICT** đúng quy
+ước mọi dataset VN trong repo.
 
 ### Cách B — REST API (backend chạy độc lập)
 

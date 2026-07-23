@@ -597,3 +597,104 @@ cờ LiveRunner kiểm mỗi vòng lặp. Badge LIVE trên nav hiện lag, đổ
   `tests/api/test_live_status.py` (6).
 - Golden hash forex/crypto/VN **không đổi** (default `weekend_flat=false`, hold rules chỉ
   áp cho live) — `test_replay_golden*.py` chạy lại xanh, không re-pin.
+
+## Plan 07b — Dữ liệu thị trường DNSE OpenAPI: spot + phái sinh VN (2026-07-23)
+
+Nguồn: <https://developers.dnse.com.vn/docs/guide/market-data/connect> (WebSocket) và
+<https://developers.dnse.com.vn/docs/dnse/get-ohlc-history> (REST lịch sử OHLC).
+
+**Vượt qua ghi chú cũ của plan 07** (mục "Venue & phạm vi": *"DNSE Entrade không có
+endpoint nến … VN30F bị từ chối thẳng khi tạo run live"*). Ghi chú đó nói về **Entrade
+API** (hdsd2.entrade.com.vn), vốn chỉ có giao dịch/tài sản. **DNSE OpenAPI là hệ thống
+khác** và có đầy đủ OHLC cho `STOCK` (cổ phiếu), `DERIVATIVE` (VN30F) và `INDEX`
+(VNINDEX/VN30). `SUPPORTED_LIVE_SYMBOL_TYPES` giờ là
+`{CRYPTO, STOCK_VN_CASH, STOCK_VN_DERIV}`; chỉ FOREX còn bị từ chối (plan 10).
+
+### Quyết định
+
+| # | Điểm | Chốt | Lý do |
+|---|---|---|---|
+| 1 | REST hay WebSocket | **REST `GET /price/ohlc`**, polling — giống hệt quyết định #4 của plan 07 cho Binance | Engine chỉ ăn **nến đã đóng** trên lưới 1D (profile VN ép 1D); polling ít trạng thái lỗi hơn socket có state, và quan trọng nhất: cùng `BarSource` ⇒ `test_live_matches_replay` vẫn có nghĩa. Channel `ohlc_closed.{resolution}.{encoding}` là tối ưu độ trễ, để plan 12 (giao thức đã ghi đủ ở cuối mục này) |
+| 2 | Đơn vị giá cổ phiếu | **Nhân 1000** (`STOCK_PRICE_SCALE`) | DNSE báo HPG = `24.35` nghĩa là 24 350 VND. Mọi `instruments.yaml`, fixture và dataset trong repo là **VND nguyên** (`hpg_1d_sample.csv` mở ở 27000.0, `pip=1.0` VND). Không scale = sai số **1000×** trên sizing và P&L. `DERIVATIVE` (điểm chỉ số, 1881.2) và `INDEX` **không** scale |
+| 3 | Mốc thời gian nến D1 | **Neo về 09:00 ICT (= 02:00 UTC) của ngày giao dịch ICT** | Đúng quy ước mọi dataset VN trong repo, và là mốc plan 05 §9 dựa vào ("`close_ts` của bar D1 rơi vào 09:00 ICT phiên KẾ TIẾP"). Chuẩn hoá đi qua **ngày lịch ICT** nên **idempotent** với mọi quy ước venue có thể dùng (00:00 ICT / 00:00 UTC / 09:00 ICT / 14:45 ICT đều ra cùng một ngày) — có test parametrize 4 mốc |
+| 4 | "Nến đã đóng" | Giữ nguyên `open_ts + tf_duration <= now` (C11), **không** đặc cách VN | Với D1 VN, nến hôm nay chỉ thấy được lúc 09:00 ICT hôm sau — đúng lúc nến kế tiếp mở, nên fill D6 rơi vào open phiên đó. Sửa thành 14:45 ICT sẽ làm live **lệch khỏi mọi backtest đã chạy** |
+| 5 | Khung thời gian | 15m→`15`, 1H→`1H`, 1D→`1D`, 1W→`1W`. **Không có 4H** | DNSE chỉ có 1/3/5/15/30/1H/1D/1W. Trùng với quyết định plan 05 #2 (VN chỉ D1, không định nghĩa H4 trên phiên VN). Override sai khung → `FeedError` ngay, không âm thầm lấy khung khác |
+| 6 | Credentials | `DNSE_API_KEY` / `DNSE_API_SECRET` từ env; thiếu → `ConfigError` **trước khi tạo run** | Fail-closed (ưu tiên "ít sự cố nhất"). Secret không bao giờ vào log/repr (có test) |
+| 7 | Lịch sử ngắn không phải lỗi | `backfill` trả về ít hơn `warmup_bars_required` mà **không raise** | VN30F1M mới niêm yết 2017 ⇒ xin 2100 bar D1 (~8,4 năm) có thể không đủ. Engine đã trả `wait/warmup` khi indicator còn NaN (C12) — đúng hướng fail-closed |
+| 8 | Ký REST | HMAC-SHA256 theo HTTP Signature; gửi **cả** `Date` lẫn `X-Aux-Date` | Trang "Xác thực" đặt tên header là `Date`, trang endpoint OHLC đặt tên `X-Aux-Date`. Gửi cả hai thoả mãn cả hai cách đọc và không tốn gì |
+
+### Chi tiết ký REST (`bot/data/dnse_feed.py`)
+
+Signing string (thứ tự dòng và chữ thường là bắt buộc, sai là bị từ chối ngay):
+
+```
+(request-target): get /price/ohlc
+date: Fri, 15 May 2026 07:11:30 +0000
+nonce: <uuid4 hex 32 ký tự>
+```
+
+→ HMAC-SHA256(API Secret, chuỗi trên) → Base64 → URL-encode **chỉ** 3 ký tự `+ / =`
+(không double-encode) → header:
+
+```
+X-Signature: Signature keyId="{key}",algorithm="hmac-sha256",headers="(request-target) date",signature="{enc}",nonce="{nonce}"
+```
+
+`Date` lệch quá **±1 phút** so với giờ DNSE → từ chối; nonce **không được tái dùng**, nên
+**mỗi lần retry ký lại** (có test đếm 3 chữ ký khác nhau cho 3 lần thử).
+
+### ⚠️ Cần xác minh khi user có API key (chưa kiểm được vì không có credentials)
+
+1. **`(request-target)` có kèm query string không?** Ví dụ trong docs (`get /accounts`)
+   không có query, nhưng `/price/ohlc` luôn có 5 tham số. Mặc định **chỉ ký path**; đặt
+   `DNSE_SIGN_QUERY=1` để chuyển sang cách đọc draft-cavage (path + query) nếu server từ
+   chối. Đây là điểm dễ sai nhất — thử trước tiên khi gặp `AUTH_FAILED`.
+2. **`resolution` viết hoa hay thường?** Trang enum ghi `1H`, trang endpoint ghi `1h`.
+   Đang dùng `1H`; đổi ở `RESOLUTION_BY_TIMEFRAME` nếu 400.
+3. **Quy ước timestamp nến D1 thật của venue** — chuẩn hoá đã idempotent cho mọi khả
+   năng hợp lý (quyết định #3), nhưng vẫn nên đối chiếu một ngày thật với
+   `hpg_1d_sample.csv` (02:00Z) sau lần fetch đầu tiên.
+4. **Hệ số 1000 cho cổ phiếu** (quyết định #2) — kiểm bằng mắt: HPG phải ra ~24 000–30 000
+   VND, không phải ~24–30. Đây là sai số nguy hiểm nhất nếu sai chiều.
+5. **Header tên `Date` hay `X-Aux-Date`** — nếu server phàn nàn về header thừa thì bỏ bớt.
+
+### Giới hạn đã biết (không sửa ở đây)
+
+- **`VN30F1M` live là chuỗi front-month có bước nhảy tại roll** — venue trả alias
+  cuộn tháng, không back-adjust. Không nguy hiểm cho vị thế (plan 05 §9 đã force-close tại
+  đáo hạn nên không lệnh nào sống qua roll), nhưng **ATR/EMA sẽ nuốt một gap** mỗi tháng.
+  Backtest nên dùng `scripts/stitch_vn30f.py` (panama/hiệu số) như trước.
+- **Không mô hình tick HOSE / trần-sàn ±7%** — sai lệch #16–17 giữ nguyên; giá DNSE là giá
+  thật nên đã đúng bước giá, nhưng engine vẫn không *ép* SL/TP về bước giá hợp lệ.
+- **Chỉ REST, chưa dùng WebSocket** — độ trễ nhận nến đóng phụ thuộc chu kỳ poll
+  (`LiveRunner` ngủ tối đa 30s), quá đủ cho D1.
+- **`ohlc_closed` WS cho khung intraday** sẽ là đường nâng cấp khi nào chạy 15m/1H.
+
+### Giao thức WebSocket (ghi lại để plan sau không phải đọc docs lại)
+
+`wss://ws-openapi.dnse.com.vn/v1/stream?encoding=json|msgpack` →
+`welcome` (kèm `session_id`, phải auth trong 30s) →
+`{"action":"auth","api_key":…,"signature":HMAC-SHA256(secret, "{api_key}:{timestamp}:{nonce}").hexdigest(),"timestamp":<giây>,"nonce":<micro giây>}`
+→ `auth_success` → `{"action":"subscribe","channels":[{"name":"ohlc_closed.1D.json","symbols":["HPG"]}]}`
+→ `subscribed`. **Lưu ý**: với phái sinh truyền `symbolType` (`VN30F1M`) chứ không phải mã
+hợp đồng (`41I1G4000`). Server ping mỗi 3 phút, client phải `pong` trong 60s (nên tự ping
+mỗi 25s). Kết nối **hết hạn sau 8 giờ** (`connection_expired` + close 1008) — reconnect là
+hành vi bình thường, backoff 1s→60s. Phân loại message: chỉ coi là control khi `action` ∈
+`{welcome, auth_success, subscribed, unsubscribed, ping, pong, connection_expired, error}`,
+còn lại là data (nhận biết qua trường `T`). Payload `ohlc_closed` giống hệt REST về ngữ
+nghĩa nhưng dạng object đơn (`time/open/high/low/close/volume/symbol/resolution/type`) —
+**vẫn phải áp cùng hệ số 1000 và cùng chuẩn hoá mốc D1** ở trên.
+
+### Kiểm chứng
+
+- `tests/unit/test_dnse_feed.py` (35 test): signing string đúng layout docs, chữ ký
+  verify được bằng HMAC dựng tay, nonce mới mỗi lần retry, thiếu credentials fail-closed,
+  neo D1 idempotent qua 4 quy ước venue, ICT không có DST, nến đang hình thành bị loại,
+  biên `open+dur == now` thuộc phía đã đóng, scale 1000 cho STOCK và **không** scale cho
+  DERIVATIVE/INDEX, 4H bị từ chối, payload lệch độ dài mảng bị từ chối, backfill đi lùi
+  đúng hướng / dừng sau 2 cửa sổ rỗng / lịch sử ngắn không raise, lịch poll cho D1/1W/15m.
+  Không test nào mở socket hay cần credentials thật.
+- `tests/unit/test_live_factory.py` (+4): VN cash & deriv được chấp nhận live (khung 1D
+  từ profile), đường wiring thật dựng `DnseOhlcFeed` đúng `type` và ghi venue DNSE vào
+  dataset id (để guard đổi-venue lúc resume so đúng chỗ), thiếu key → `ConfigError`.
+- Golden hash **không đổi**: module này chỉ là nguồn dữ liệu mới, không đụng engine.

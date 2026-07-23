@@ -25,9 +25,11 @@ from typing import Any
 
 from bot.config.loader import load_default_config, load_instruments
 from bot.config.models import BotConfig, live_effective_config
+from bot.config.profiles import is_stock_vn
 from bot.core.errors import ConfigError
 from bot.core.types import InstrumentSpec
 from bot.core.wallclock import NowFn, utc_now
+from bot.data.dnse_feed import DNSE_OPENAPI_BASE, DnseOhlcFeed, market_type_for
 from bot.data.feed import Feed
 from bot.data.live_feed import BINANCE_FUTURES_MAINNET, BinanceFuturesFeed
 from bot.data.live_feed import empty_frame as _empty_frame
@@ -37,10 +39,10 @@ from bot.engine.context import build_symbol_context
 from bot.engine.live_runner import BarSource, LiveRunner, LiveSymbol
 from bot.notify import LiveAlerts, Notifier, build_notifier
 
-#: Venues that can serve a live feed today. VN30F has no public OHLC endpoint (the DNSE
-#: Entrade API is trading-only), so it needs a market-data source the user nominates
-#: before a second BarSource can be written against this same interface.
-SUPPORTED_LIVE_SYMBOL_TYPES = {"CRYPTO"}
+#: Venues that can serve a live feed today: Binance USDⓈ-M Futures for CRYPTO (plan 07)
+#: and the DNSE OpenAPI OHLC history for both Vietnamese spot and derivatives. FOREX is
+#: still plan 10 — nothing here serves it, so it is refused up front.
+SUPPORTED_LIVE_SYMBOL_TYPES = {"CRYPTO", "STOCK_VN_CASH", "STOCK_VN_DERIV"}
 
 
 def default_live_db_path() -> str:
@@ -145,13 +147,19 @@ def build_live_session(
         if eff_cfg.symbol_type not in SUPPORTED_LIVE_SYMBOL_TYPES:
             raise ConfigError(
                 f"{entry.symbol}: live feed for symbol_type {eff_cfg.symbol_type!r} is "
-                "not implemented — plan 07 ships the Binance USDⓈ-M Futures feed "
-                f"(CRYPTO); forex is plan 10 and VN30F needs a market-data source the "
-                "user nominates (the DNSE Entrade API has no OHLC endpoint)"
+                "not implemented — CRYPTO runs on Binance USDⓈ-M Futures and "
+                "STOCK_VN_CASH / STOCK_VN_DERIV on the DNSE OpenAPI OHLC history; "
+                "forex is plan 10"
             )
         source: BarSource
         if source_factory is not None:
             source = source_factory(entry.symbol, eff_cfg.timeframe)
+        elif is_stock_vn(eff_cfg.symbol_type):
+            source = DnseOhlcFeed(
+                entry.symbol,
+                eff_cfg.timeframe,
+                market_type_for(eff_cfg.symbol_type),
+            )
         else:
             source = BinanceFuturesFeed(entry.symbol, eff_cfg.timeframe, base_url=base_url)
         context = build_symbol_context(
@@ -162,7 +170,10 @@ def build_live_session(
             cursor=now_fn(),
         )
         symbols[entry.symbol] = LiveSymbol(context=context, source=source)
-        symbol_datasets[entry.symbol] = f"live:{base_url}:{entry.symbol}:{eff_cfg.timeframe}"
+        # The dataset id encodes the venue so the resume path below can refuse a silent
+        # venue swap; VN symbols never come from `base_url` (which is Binance's).
+        venue = DNSE_OPENAPI_BASE if is_stock_vn(eff_cfg.symbol_type) else base_url
+        symbol_datasets[entry.symbol] = f"live:{venue}:{entry.symbol}:{eff_cfg.timeframe}"
 
     if resumed:
         # Refuse a venue swap on restart. The dataset id encodes venue/symbol/timeframe,

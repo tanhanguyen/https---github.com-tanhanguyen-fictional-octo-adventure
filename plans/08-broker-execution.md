@@ -152,9 +152,14 @@ index đầy đủ: `https://hdsd2.entrade.com.vn/llms.txt`). Những gì đã x
   `partial_fraction=1.0` cho profile này và ghi deviation (❓ user chốt).
 - **Sổ lệnh/deals**: endpoints 8–11 (sổ lệnh, chi tiết, hủy, danh sách deals) → nguồn cho
   reconciliation mỗi vòng.
-- **KHÔNG có endpoint nến/OHLC** trong bộ docs này — market data cho live runner (plan 07)
-  phải lấy nguồn khác (❓ user chỉ định; DNSE có hệ market-data riêng ngoài docs này).
-  EntradeAdapter chỉ lo khớp lệnh.
+- **KHÔNG có endpoint nến/OHLC** trong bộ docs này — nhưng câu hỏi đó **đã đóng**
+  (2026-07-23): market data cho live runner lấy từ **DNSE OpenAPI**
+  (<https://developers.dnse.com.vn>, `GET /price/ohlc` + WS `ohlc_closed`), đã triển khai ở
+  `bot/data/dnse_feed.py`. EntradeAdapter chỉ lo khớp lệnh.
+  *Cân nhắc khi làm plan 08*: DNSE OpenAPI **cũng có** API đặt lệnh (`/docs/dnse/trading`,
+  2FA bằng Trading Token 8 giờ qua Email/Smart OTP, xác thực HMAC cùng cơ chế signature như
+  market data) — nếu dùng nó thay Entrade thì market data và execution chung một bộ
+  credentials, đỡ một hệ thống phải nuôi. ❓ để user chốt khi bắt đầu plan 08.
 - OTP/2FA: docs không nhắc cho luồng v2/auth — xác minh thực nghiệm trên papertrade;
   nếu tài khoản thật đòi OTP đặt lệnh thì phải xử lý (❓ hỏi user khi gặp).
 

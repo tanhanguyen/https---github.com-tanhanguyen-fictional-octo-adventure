@@ -16,10 +16,13 @@
    Lưu ý paper: order_engine tự tính PnL theo giá, **không mô hình hoá funding fee** của
    perpetual — ghi deviation; số funding thật đối chiếu ở plan 08. Forex live: xem
    `plans/10-forex.md` (đề xuất OANDA v20 — có nến, không cần Windows/MT5).
-   **VN30F**: user muốn hướng tới DNSE Entrade (docs <https://hdsd2.entrade.com.vn/entrade-api>),
-   nhưng bộ API đó chỉ có giao dịch/tài sản, **không có endpoint nến OHLC** — live feed cho
-   VN30F cần nguồn market data riêng (❓ user chỉ định nguồn; khi có thì viết `LiveFeed`
-   thứ hai theo cùng interface, phần còn lại của plan không đổi).
+   **Chứng khoán VN — ĐÃ GIẢI QUYẾT (2026-07-23)**: ghi chú cũ ("Entrade không có endpoint
+   nến") chỉ đúng với *Entrade* API. **DNSE OpenAPI** (<https://developers.dnse.com.vn>) là
+   hệ thống khác và có đủ OHLC cho cổ phiếu, phái sinh **và** chỉ số:
+   `GET https://openapi.dnse.com.vn/price/ohlc` (lịch sử) + WebSocket `ohlc_closed`
+   (realtime). Đã viết `bot/data/dnse_feed.py::DnseOhlcFeed` theo đúng interface
+   `BarSource` như dự phòng ở đây — phần còn lại của plan không đổi. Chi tiết quyết định,
+   bẫy đơn vị giá và danh sách cần xác minh: `docs/decisions.md` mục "Plan 07b".
 2. ❓ Polling REST (mỗi phút kiểm bar 15m mới đóng) hay websocket? Đề xuất **polling** —
    đơn giản, đủ cho bar 15m, ít trạng thái lỗi.
 3. ❓ Kênh cảnh báo: Telegram bot (token qua env `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)?
