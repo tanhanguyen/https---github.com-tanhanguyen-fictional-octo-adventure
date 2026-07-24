@@ -253,6 +253,25 @@ class ExecutionConfig(StrictModel):
     weekend_flat: bool = False
 
 
+class AlertsConfig(StrictModel):
+    """Plan 13: how loud the alert center is. Only the TELEGRAM channel is configurable
+    — the DB row is always written (it is the backend log and the web UI's source), so
+    there is deliberately no switch that can make an event disappear entirely."""
+
+    telegram_enabled: bool = True
+    telegram_min_level: Literal["INFO", "WARN", "ERROR", "CRITICAL"] = "INFO"
+    #: Codes that never go to Telegram (they are still logged and still toast on the web
+    #: UI). `trade_pending` is muted by default: one per signal is too noisy on a phone.
+    #: CRITICAL alerts ignore this list — see `AlertBus`.
+    telegram_muted_codes: list[str] = Field(default_factory=lambda: ["trade_pending"])
+    #: Same code + same key (usually the symbol) inside this window = one Telegram
+    #: message. 0 disables throttling. CRITICAL is never throttled.
+    cooldown_seconds: int = 600
+    #: Drawdown from peak equity (plan 08 §2, user decision 2026-07-18 đợt 2).
+    drawdown_warn_pct: float = 5.0
+    drawdown_critical_pct: float = 10.0
+
+
 class RiskConfig(StrictModel):
     max_risk_per_trade_pct: float = 1.0  # C7: base %, multiplied by risk_multiplier
     retest_tolerance_mode: Literal["atr", "percent"] = "atr"
@@ -320,6 +339,7 @@ class BotConfig(StrictModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     strategies: StrategiesConfig = Field(default_factory=StrategiesConfig)
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     # Plan 04: portfolio symbol list + whitelist. Empty -> auto-migrated (see validator
     # below) to a single entry mirroring `symbol`/`symbol_type` -- byte-identical
     # single-symbol behavior for old configs.

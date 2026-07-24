@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 
 import pandas as pd
 
+from bot.alerts.bus import AlertBus
 from bot.analytics.metrics import RunReport, compute_run_report, diff_histograms, diff_reports
 from bot.config.loader import deep_merge, load_default_config, load_instruments
 from bot.config.metadata import metadata_by_field
@@ -41,9 +42,11 @@ from bot.data.feed import Feed
 from bot.data.news import NewsImportResult, import_news_csv
 from bot.db import repositories as repo
 from bot.db.connection import migrate
+from bot.engine.announce import announce_trade_events
 from bot.engine.context import SymbolContext, build_symbol_context
 from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
+from bot.notify import LiveAlerts
 
 _R = TypeVar("_R")
 
@@ -77,7 +80,7 @@ def default_db_path() -> str:
 
 
 class RunnerService:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, alerts_conn: sqlite3.Connection | None = None) -> None:
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -91,6 +94,13 @@ class RunnerService:
         self.runner: Runner | None = None
         self.symbol_datasets_active: dict[str, str] | None = None
         self.config_version_id: int | None = None
+
+        # Plan 13: a backtest/replay run raises the same trade-lifecycle alerts a live
+        # run does, so the dashboard toasts while you step. Telegram is deliberately NOT
+        # wired here (`notifier=None` -> every row is stored `muted`): a replay of five
+        # thousand bars would otherwise machine-gun a phone with historical fills.
+        self.alerts_conn = alerts_conn
+        self.alerts: LiveAlerts | None = None
 
         self._play_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -390,6 +400,7 @@ class RunnerService:
             self.runner = runner
             self.symbol_datasets_active = symbol_datasets
             self.config_version_id = int(cfg_row["id"])
+            self._rebuild_alerts(run_db_id)
 
             return self._run_info(run_db_id)
 
@@ -416,11 +427,38 @@ class RunnerService:
             return None
         return self._run_info(self.run_id)
 
+    # ------------------------------------------------------------------ alerts
+    def _rebuild_alerts(self, run_id: int) -> None:
+        """Point the alert formatter at the newly created run. No-op when the app was
+        built without an alert log (unit tests constructing RunnerService directly)."""
+        if self.alerts_conn is None:
+            return
+        bus = AlertBus(
+            self.alerts_conn,
+            notifier=None,
+            config=self.get_active_config()[1].alerts,
+            run_id=run_id,
+            source="backtest",
+        )
+        self.alerts = LiveAlerts(run_label=bus.run_label, emitter=bus)
+
+    def _announce(self, summaries: list[StepSummary]) -> None:
+        """Called with `self.lock` held: it reads the post-tick SymbolContext, which the
+        play worker thread is otherwise free to mutate."""
+        if self.alerts is None or self.runner is None:
+            return
+        for s in summaries:
+            sc = self.runner.symbols.get(s.symbol)
+            if sc is not None:
+                announce_trade_events(self.alerts, s, sc)
+
     def step(self) -> list[StepSummary]:
         with self.lock:
             if self.runner is None:
                 raise RuntimeError("no active run — POST /api/run first")
-            return self.runner.step()
+            summaries = self.runner.step()
+            self._announce(summaries)
+            return summaries
 
     def play(self, interval_ms: int = 200) -> None:
         with self.lock:
@@ -439,6 +477,7 @@ class RunnerService:
                 if self.runner is None:
                     break
                 summaries = self.runner.step()
+                self._announce(summaries)
             if not summaries:
                 break
             time.sleep(max(interval_ms, 1) / 1000.0)

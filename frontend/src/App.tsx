@@ -1,5 +1,6 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import './App.css'
+import { AlertCenter } from './components/AlertCenter'
 import { LiveBadge } from './components/LiveBadge'
 import { ConfigPage } from './pages/ConfigPage'
 import { Dashboard } from './pages/Dashboard'
@@ -33,6 +34,7 @@ function App() {
           Runs
         </NavLink>
         <LiveBadge />
+        <AlertCenter />
       </nav>
       <main className="app-main">
         <Routes>

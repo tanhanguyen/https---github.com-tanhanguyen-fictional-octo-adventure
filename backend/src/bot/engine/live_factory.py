@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,7 @@ def build_live_session(
     now_fn: NowFn = utc_now,
     sleep_fn: Any | None = None,
     conn: sqlite3.Connection | None = None,
+    alerts_factory: Callable[[int, BotConfig], LiveAlerts] | None = None,
 ) -> LiveSession:
     """Create (or resume) the live run and return a ready-to-run LiveRunner.
 
@@ -202,8 +204,19 @@ def build_live_session(
             connection, cfg_version_id, symbol_datasets, cfg.starting_equity, mode="live"
         )
 
-    alerts = LiveAlerts(
-        notifier if notifier is not None else build_notifier(), run_label=f"live#{run_id}"
+    # `alerts_factory` is how plan 13's AlertBus gets in without `bot/engine` importing
+    # `bot/alerts` (invariant #6): the composition root (`bot.cli`) hands in a builder,
+    # and this is the first point where both of its inputs exist — the run id, and the
+    # config the run actually runs on (a RESUMED run uses its frozen snapshot, so the
+    # alert thresholds must come from there, not from today's default config).
+    # Without a factory this is plan 07's behaviour: Telegram if configured, log
+    # otherwise, and no DB/web-UI fan-out.
+    alerts = (
+        alerts_factory(run_id, cfg)
+        if alerts_factory is not None
+        else LiveAlerts(
+            notifier if notifier is not None else build_notifier(), run_label=f"live#{run_id}"
+        )
     )
     runner = LiveRunner(
         connection,

@@ -698,3 +698,140 @@ nghĩa nhưng dạng object đơn (`time/open/high/low/close/volume/symbol/resol
   từ profile), đường wiring thật dựng `DnseOhlcFeed` đúng `type` và ghi venue DNSE vào
   dataset id (để guard đổi-venue lúc resume so đúng chỗ), thiếu key → `ConfigError`.
 - Golden hash **không đổi**: module này chỉ là nguồn dữ liệu mới, không đụng engine.
+
+## Plan 13 — Alert center: Telegram + toast web UI + log DB (2026-07-23)
+
+Yêu cầu user 2026-07-18: **mọi sự kiện quan trọng vừa alert Telegram, vừa toast trên web
+UI, vừa log lại ở backend**. Plan 07 đã có nửa Telegram (`bot/notify.py`); plan này biến
+nó thành một event bus chung, thêm bảng DB và giao diện.
+
+### 1. Danh mục event đã chốt (`bot/alerts/codes.py`)
+
+Đúng bảng của plan 13, cộng một mã: **`runner_crashed` (CRITICAL)** — plan 07 đã có
+`LiveAlerts.crashed()` nhưng plan 13 chỉ liệt kê `runner_stopped`; crash và stop là hai
+việc khác nhau (một cái tự phục hồi qua supervisor, một cái là chủ ý) nên tách mã.
+
+| Nhóm | Mã | Level |
+|---|---|---|
+| Vòng đời lệnh | `trade_pending` (Telegram **tắt** mặc định), `trade_opened`, `tp1_hit`, `trade_cancelled`, `trade_closed` | INFO |
+| Rủi ro tài khoản | `daily_loss_limit`, `equity_multiplier`, `drawdown_warn` | WARN |
+| | `drawdown_critical` | CRITICAL |
+| Sức khoẻ hệ thống | `feed_degraded`, `runner_stopped` / `feed_recovered`, `runner_started`, `daily_summary` | WARN / INFO |
+| Broker (plan 08) | `order_error` (ERROR), `naked_position_closed`, `circuit_breaker`, `desynced` (CRITICAL) | — |
+| Ảnh chart (plan 14) | `snapshot_error` | WARN |
+
+Bốn mã của plan 08 và một mã của plan 14 **đã có trong catalogue nhưng chưa được phát**:
+mức độ nghiêm trọng là quyết định của user (2026-07-18 đợt 3), ghi một lần ở đây rẻ hơn
+là mỗi plan tự nghĩ lại. Plan 08 chỉ cần gọi `alerts.emit`, không phải định nghĩa lại.
+
+`drawdown_critical` ở đây **chỉ báo**; hành động "tự chuyển paper" thuộc plan 08 §2
+(live hiện tại vốn đã là paper, không có gì để chuyển).
+
+### 2. Alert log là **database riêng** (`backend/data/alerts.db`)
+
+Quyết định đáng kể nhất của plan này. Lý do: run backtest ghi `runtime.db`, run live ghi
+`live.db` (plan 07 §3 cố tình tách), nhưng plan 13 yêu cầu **một** con trỏ
+`GET /api/alerts?since_id=` — mà một con trỏ chỉ có nghĩa trên **một** không gian id.
+Ba phương án:
+
+1. Bảng `alert` trong cả hai DB, API gộp hai nguồn → `since_id` phải thành cặp con trỏ,
+   frontend phải hiểu "id" nào thuộc DB nào. Rối và dễ mất alert.
+2. Chỉ ghi alert cho live → mất nửa "replay" của Definition of Done.
+3. **DB riêng, cả hai tiến trình cùng append.** Chọn phương án này.
+
+Hệ quả: (a) API **được phép ghi** vào đây (đánh dấu đã đọc) mà không phá quy tắc plan 07
+"API không bao giờ ghi vào DB của run live" — đây không phải DB của run nào cả;
+(b) `run_id` **không phải khoá ngoại**, nó được định danh kèm cột `source`
+(`live` / `backtest`), vì run #3 của `live.db` và run #3 của `runtime.db` là hai run khác
+nhau. WAL + `busy_timeout` cho phép hai tiến trình ghi song song. Đường dẫn đổi được bằng
+`BOT_ALERTS_DB_PATH`; app API mặc định lấy file `alerts.db` **cạnh** DB run của nó, nên
+test (tmp_path) tự động cách ly.
+
+### 3. Schema có thêm 3 cột ngoài plan
+
+Plan ghi `alert(id, run_id, ts, level, code, title, body_json, sent_telegram, read)`.
+Thực tế cần thêm:
+
+- **`telegram_status`** (`pending|sent|logged|failed|suppressed|muted`) — vì plan yêu cầu
+  đồng thời hai hành vi mà `sent_telegram=false` không phân biệt được: *"lỗi gửi → thử lại
+  ở lần emit sau"* và *"trong cooldown → cố tình không gửi"*. Nếu chỉ có cờ boolean thì
+  retry sẽ phá cooldown. `sent_telegram` vẫn giữ nguyên ngữ nghĩa của plan: **đã tới
+  điện thoại**. Vì thế có thêm trạng thái `logged` — không có token thì `LogNotifier`
+  nhận dòng đó nhưng **không ai nhận được tin**; nếu tính là `sent` thì UI sẽ vẽ icon
+  ✈️ cho một tin chưa bao giờ rời khỏi máy. `Notifier` có thuộc tính `remote: bool` để
+  bus phân biệt (thay vì `isinstance`). `logged` vẫn tính là "đã giao" cho cooldown, để
+  bật token về sau không làm đổi nhịp gộp tin.
+- **`dedupe_key`** — khoá gộp (thường là symbol, hoặc trading day cho
+  `daily_loss_limit`). Cooldown đo từ lần **gửi thành công** gần nhất của
+  (`code`, `dedupe_key`); dòng bị suppress không tự gia hạn cooldown của chính nó.
+- **`source`** — xem mục 2.
+
+### 4. Thứ tự ưu tiên trong `emit()` (bất biến của plan này)
+
+1. **DB luôn ghi** — kể cả khi Telegram tắt/muted/lỗi. Không có công tắc config nào làm
+   một event biến mất; `AlertsConfig` chỉ điều chỉnh **kênh Telegram**.
+2. Telegram nếu có token + đạt ngưỡng + không bị mute + ngoài cooldown.
+3. **CRITICAL không bao giờ bị gộp, mute hay chặn ngưỡng.**
+4. **`emit()` không bao giờ ném exception** — `except Exception` rộng ở đây là cố ý:
+   runner gọi nó ngay trong vòng lặp giao dịch, một alert giết được bot thì tệ hơn là
+   không có alert. Test `test_a_broken_db_never_escapes_emit` khoá hành vi này.
+
+`Notifier.send` đổi kiểu trả về `None → bool` để bus phân biệt gửi được / gửi lỗi (vẫn
+không ném ra ngoài như plan 07).
+
+### 5. Giữ bất biến #6 (một chiều phụ thuộc)
+
+`bot/engine/*` **không được import `bot/alerts`**. Cách giữ: tách formatter khỏi
+transport.
+
+- `bot.notify.LiveAlerts` = **formatter** (event → code/level/title/body). Engine dùng
+  cái này, như plan 07.
+- `bot.alerts.bus.AlertBus` = **transport** (DB + Telegram + cooldown), thoả protocol
+  `notify.AlertEmitter`.
+- Composition root quyết định: `bot/cli.py` truyền `alerts_factory=` vào
+  `build_live_session` (nhận `(run_id, cfg)` — chỗ đầu tiên biết cả hai, và run **resume**
+  phải lấy ngưỡng từ config đã đóng băng của nó, không phải config hôm nay); API truyền
+  `alerts_conn` vào `RunnerService`. Không có factory → đúng hành vi plan 07 (log-only).
+- `bot/engine/announce.py` gom ánh xạ `StepSummary → alert` dùng chung cho cả live runner
+  và runner replay của API, để hai đường không trôi khỏi nhau.
+- `tests/unit/test_dependency_direction.py` kiểm bằng **AST** (không grep chuỗi, vì có
+  vài docstring nhắc tới `bot.alerts` một cách chính đáng) + một test ngược lại: phải có
+  ai đó *thực sự* import `bot.alerts`, nếu không test kia xanh vì tính năng chưa được nối.
+
+### 6. Telegram cho run replay: tắt
+
+`RunnerService` dựng bus với `notifier=None` (mọi dòng là `muted`). Replay 5000 nến sẽ
+bắn hàng chục tin về điện thoại cho những lệnh đã xảy ra trong quá khứ. DB + toast vẫn đủ
+cho Definition of Done ("chạy replay: mở/đóng lệnh sinh alert trong DB, toast hiện trên web").
+
+### 7. Frontend: **tự viết toast**, không thêm thư viện
+
+Plan cho phép chọn sonner / react-hot-toast / tự viết — chọn **tự viết**
+(`components/AlertCenter.tsx` + `hooks/useAlertCenter.ts`, ~250 dòng cả CSS). Lý do: toàn
+bộ bề mặt cần dùng là "một stack cố định + TTL theo level", nó tái dùng được biến CSS sẵn
+có nên light/dark chạy đúng miễn phí, và app này mới có đúng 3 dependency runtime
+(react, router, axios) — thêm một cái nữa cho 150 dòng là không đáng.
+
+Hai chi tiết hành vi:
+
+- **Lần poll đầu KHÔNG toast gì** — chỉ học con trỏ. Mở dashboard sau một tuần mà bị chôn
+  dưới một tuần lịch sử sẽ dạy người dùng thói quen bấm tắt không đọc. Lịch sử vẫn nằm
+  trong dropdown chuông.
+- **TTL theo level**: INFO 6s, WARN 20s, ERROR/CRITICAL **không tự tắt** (phải bấm đóng).
+- `max_id` trong response lấy từ bảng chứ không từ trang kết quả, để client đang lọc
+  `level=CRITICAL` không quét lại cùng dải id mãi mãi.
+
+### 8. Kiểm chứng
+
+- `tests/unit/test_alerts_bus.py` (19 test): DB luôn có dòng kể cả khi không có Telegram;
+  cooldown gộp theo (code, key) và hết hạn đúng; **CRITICAL không bị gộp/mute/chặn ngưỡng**;
+  `trade_pending` mặc định không gửi Telegram nhưng vẫn được log; exception từ Telegram và
+  cả DB hỏng đều không thoát khỏi `emit`; retry gửi lại đúng backlog; `equity_multiplier`
+  chỉ nói khi hệ số **đổi**; mã lạ vẫn được log ở mức WARN. Không test nào mở socket.
+- `tests/api/test_alerts.py` (8 test): danh sách newest-first, `since_id`, lọc level,
+  con trỏ vẫn tiến khi trang rỗng, `limit` bị chặn 422, đánh dấu đọc idempotent + list
+  rỗng **không** phải "đọc tất cả", và một run replay thật sinh đủ
+  `trade_pending`/`trade_opened`/`trade_closed`.
+- `tests/unit/test_dependency_direction.py`: bất biến #6.
+- Golden hash **không đổi**: `StepSummary` chỉ được **thêm** hai trường quan sát
+  (`opened_trade_db_id`, `risk_multiplier`); không có nhánh quyết định nào đọc chúng.

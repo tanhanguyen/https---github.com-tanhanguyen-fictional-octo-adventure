@@ -88,7 +88,8 @@ BOT_DB_PATH=data/live.db ./.venv/bin/python -m bot.cli live
 - `--testnet` đổi sang `testnet.binancefuture.com` (cùng schema, khác base URL).
 - DB live **tách khỏi** DB backtest (mặc định `backend/data/live.db`, đổi bằng `BOT_DB_PATH`).
 - Cảnh báo Telegram nếu đặt `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`; không có thì log-only,
-  mọi thứ vẫn chạy.
+  mọi thứ vẫn chạy. **Mọi cảnh báo luôn được ghi vào DB alert** (plan 13, xem mục dưới),
+  kể cả khi không có token.
 - Khởi động lại là an toàn: state máy trạng thái + lệnh đang mở được nạp lại từ DB, bar bị
   thiếu trong lúc chết được xử lý tuần tự (catch-up), bar đã xử lý không bao giờ chạy hai lần.
 - Dừng: `POST /api/live/stop` (đặt cờ `run.stop_requested`, runner kiểm mỗi vòng lặp), hoặc Ctrl-C.
@@ -116,6 +117,26 @@ Hai điểm dễ sai đã được xử lý sẵn trong feed (chi tiết + danh 
 API key" ở `docs/decisions.md`, mục "Plan 07b"): giá **cổ phiếu** DNSE tính bằng **nghìn
 VND** nên được nhân 1000 về VND nguyên, và nến **D1** được neo về **09:00 ICT** đúng quy
 ước mọi dataset VN trong repo.
+
+### Cảnh báo — Telegram + toast web + log DB (plan 13)
+
+Mọi sự kiện quan trọng đi qua **một** event bus: ghi DB (luôn luôn) → Telegram (nếu có
+token, đạt ngưỡng, ngoài cửa sổ gộp) → web UI tự poll và hiện toast.
+
+- **DB riêng**: `backend/data/alerts.db` (đổi bằng `BOT_ALERTS_DB_PATH`), dùng chung cho
+  cả run live lẫn run backtest — vì thế `GET /api/alerts?since_id=` chỉ có một con trỏ.
+- **Ngưỡng chỉnh được** qua `PATCH /api/config` (mục `alerts`): `telegram_min_level`,
+  `telegram_muted_codes` (mặc định `["trade_pending"]` — nhiều và ồn), `cooldown_seconds`
+  (mặc định 600s), `drawdown_warn_pct` / `drawdown_critical_pct`.
+- **CRITICAL không bao giờ bị gộp hay tắt** — dù cấu hình thế nào.
+- Trên web: chuông ở header có badge số chưa đọc + lịch sử; toast INFO tự tắt sau 6s,
+  WARN 20s, **ERROR/CRITICAL phải bấm đóng**.
+
+```bash
+curl 'localhost:8000/api/alerts?limit=20'              # mới nhất trước
+curl 'localhost:8000/api/alerts?level=CRITICAL'        # lọc theo mức
+curl -X POST localhost:8000/api/alerts/read -H 'content-type: application/json' -d '{"ids":[1,2]}'
+```
 
 ### Cách B — REST API (backend chạy độc lập)
 
@@ -205,7 +226,7 @@ cd backend
 ./.venv/bin/ruff check src       # lint
 ```
 
-Test then chốt: `test_no_lookahead` (bất biến MTF nến-đã-đóng), `test_replay_golden` (hash seed=42 để refactor an toàn), `test_no_wallclock` (cấm `datetime.now` trong engine), `test_counters_consistent` (cache == derived).
+Test then chốt: `test_no_lookahead` (bất biến MTF nến-đã-đóng), `test_replay_golden` (hash seed=42 để refactor an toàn), `test_no_wallclock` (cấm `datetime.now` trong engine), `test_counters_consistent` (cache == derived), `test_dependency_direction` (hướng phụ thuộc một chiều, kể cả `engine ↛ alerts`).
 
 ---
 
@@ -264,12 +285,13 @@ backend/src/bot/
 │              live_runner + live_state + live_factory (plan 07: paper trading thời gian thực)
 ├── data/         synthetic feed (mock), csv_feed, live_feed (Binance futures), resample, dataset
 ├── db/           SQLite schema + repositories (bộ đếm DERIVED, config versioned)
+├── alerts/       plan 13: event bus (DB luôn ghi + Telegram + web toast), DB alert riêng
 ├── api/          FastAPI routers (mỏng) trên RunnerService
-├── notify.py     cảnh báo Telegram (không token → log-only)
+├── notify.py     định dạng cảnh báo + transport Telegram (không token → log-only)
 └── cli.py        `python -m bot.cli replay|live|ab|import-csv|import-news`
 
 frontend/src/     React + Vite + TS — pages/ Dashboard, Config, Decisions, Trades
 docs/             spec_v1_2.md (nguồn chân lý), decisions.md (C1–C11, D1–D11, sai lệch)
 ```
 
-**Hướng phụ thuộc một chiều:** `indicators → filters/strategies → engine → api`. Ba tầng đầu thuần pandas, không I/O — test được không cần DB hay FastAPI.
+**Hướng phụ thuộc một chiều:** `indicators → filters/strategies → engine → api`. Ba tầng đầu thuần pandas, không I/O — test được không cần DB hay FastAPI. `engine` **không được** import `alerts`: runner chỉ nói chuyện với bộ định dạng `notify.LiveAlerts`, còn ai gắn `AlertBus` đằng sau là việc của `cli.py`/API (`tests/unit/test_dependency_direction.py` giữ luật này bằng AST).

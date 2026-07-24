@@ -263,21 +263,32 @@ def cmd_live(symbol: str | None, db_path: str | None, testnet: bool, iterations:
     """Plan 07: one process runs the whole live portfolio (account-wide caps only mean
     something if one process owns them). `--symbol` is a debug override for running a
     single symbol; `--iterations` bounds the loop for smoke tests."""
+    from bot.alerts import build_live_alerts, connect_alerts_db, default_alerts_db_path
     from bot.data.live_feed import BINANCE_FUTURES_MAINNET, BINANCE_FUTURES_TESTNET
     from bot.engine.live_factory import build_live_session
+
+    # Plan 13: this is the composition root that decides a live run's alerts go to the
+    # shared alert log (and from there to Telegram + the web UI), not just to a logger.
+    # The thresholds come from the run's own config — resumed runs keep the frozen one.
+    alerts_conn = connect_alerts_db()
 
     session = build_live_session(
         db_path=db_path,
         only_symbol=symbol,
         base_url=BINANCE_FUTURES_TESTNET if testnet else BINANCE_FUTURES_MAINNET,
+        alerts_factory=lambda run_id, cfg: build_live_alerts(
+            alerts_conn, cfg.alerts, run_id=run_id, source="live"
+        ),
     )
     print(f"live run_id: {session.run_id}  ({'resumed' if session.resumed else 'new'})")
     print(f"symbols: {sorted(session.runner.symbols)}")
     print(f"db: {db_path or 'BOT_DB_PATH / backend/data/live.db'}")
+    print(f"alerts db: {default_alerts_db_path()}")
     try:
         stats = session.runner.run_forever(max_iterations=iterations)
     finally:
         session.close()
+        alerts_conn.close()
     print(
         f"bars processed: {stats.bars_processed}  polls: {stats.polls} "
         f"(failures {stats.poll_failures})  opened: {stats.trades_opened} "

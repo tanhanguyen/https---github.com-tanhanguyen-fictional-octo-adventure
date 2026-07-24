@@ -35,6 +35,14 @@ FILTER_METADATA: list[FieldMeta] = [
         spec_ref="plan 04",
     ),
     FieldMeta(
+        "alerts",
+        "Cảnh báo (Telegram / toast / log)",
+        "alerts",
+        0,
+        None,
+        spec_ref="plan 13",
+    ),
+    FieldMeta(
         "filters.trend",
         "Xu hướng chính (EMA34/89)",
         "regime",

@@ -1,6 +1,8 @@
 import axios from 'axios'
 import type {
   AccountOut,
+  AlertListOut,
+  AlertReadOut,
   BarOut,
   ConfigOut,
   ConfigSchemaOut,
@@ -38,6 +40,11 @@ export const api = {
   getAccount: () => http.get<AccountOut>('/account').then((r) => r.data),
 
   getLiveStatus: () => http.get<LiveStatusOut>('/live/status').then((r) => r.data),
+
+  listAlerts: (params: { since_id?: number; level?: string; limit?: number } = {}) =>
+    http.get<AlertListOut>('/alerts', { params }).then((r) => r.data),
+  markAlertsRead: (ids: number[]) =>
+    http.post<AlertReadOut>('/alerts/read', { ids }).then((r) => r.data),
 
   getConfig: () => http.get<ConfigOut>('/config').then((r) => r.data),
   patchConfig: (patch: Record<string, unknown>) =>

@@ -45,6 +45,7 @@ from bot.data.live_feed import LiveFeedError, empty_frame
 from bot.data.resample import build_all_timeframes
 from bot.db import repositories as repo
 from bot.engine import live_state
+from bot.engine.announce import announce_trade_events
 from bot.engine.context import SymbolContext
 from bot.engine.runner import Runner, StepSummary
 from bot.notify import LiveAlerts
@@ -136,6 +137,13 @@ class LiveRunner:
         self.runner: Runner | None = None
         self._started_at = now_fn()
         self._last_summary_day: str | None = None
+        # Plan 13 drawdown alert: the peak this process measures the drawdown from.
+        # `start()` raises it to the restored equity if a resumed run is already up, so a
+        # restart cannot invent a drawdown that never happened — and it deliberately
+        # never LOWERS it, so a restart in the middle of a real drawdown still reports
+        # one instead of quietly adopting the sunken equity as the new peak.
+        self._peak_equity = config.starting_equity
+        self._drawdown_band = 0
 
     # ------------------------------------------------------------------ startup
     def start(self) -> None:
@@ -189,6 +197,7 @@ class LiveRunner:
             # account_state cache, so put them back before the first step.
             runner.balance, runner.equity = newest.balance, newest.equity
         self.runner = runner
+        self._peak_equity = max(self._peak_equity, runner.equity)
         self._reconcile_orphan_trades()
 
         repo.update_live_status(
@@ -197,6 +206,11 @@ class LiveRunner:
             feed_state="ok",
             started_at_utc=self._started_at.isoformat(),
             last_poll_ts_utc=now.isoformat(),
+        )
+        self.alerts.started(
+            f"run #{self.run_id} ({'resumed' if restored else 'fresh'}) — "
+            f"equity {runner.equity:,.2f}",
+            symbols=sorted(self.symbols),
         )
 
     def _reconcile_orphan_trades(self) -> None:
@@ -378,25 +392,66 @@ class LiveRunner:
             )
 
     def _announce(self, summaries: list[StepSummary]) -> None:
+        """Turn one tick's summaries into alerts (plan 13's event catalogue).
+
+        Everything here is *observation* — the live layer watches what the shared replay
+        engine did and reports it. No alert may change a decision, and no alert failure
+        may stop the loop (`AlertBus.emit` swallows; `LiveAlerts` only formats)."""
         for s in summaries:
             if "FILLED" in s.trade_event_types:
                 self.stats.trades_opened += 1
-                trade = self.symbols[s.symbol].context.trade
-                self.alerts.trade_opened(
-                    s.symbol,
-                    trade.direction.value if trade else "?",
-                    trade.strategy.value if trade else "?",
-                    s.equity,
-                )
             if s.closed_result is not None:
                 self.stats.trades_closed += 1
-                self.alerts.trade_closed(
-                    s.symbol,
-                    s.closed_result,
-                    s.closed_pnl_r or 0.0,
-                    s.closed_pnl_amount or 0.0,
-                    s.equity,
+            announce_trade_events(self.alerts, s, self.symbols[s.symbol].context)
+
+            if s.reason == "daily_loss_limit_reached":
+                # The cooldown key is the trading day, so a day spent blocked is one
+                # Telegram message rather than one per bar.
+                day = self._trading_day_of(s.bar_ts)
+                self.alerts.daily_loss_limit(
+                    day, repo.daily_loss_count(self.conn, self.run_id, day)
                 )
+            # LiveAlerts only speaks when the multiplier actually changes.
+            self.alerts.equity_multiplier(
+                s.risk_multiplier,
+                repo.consecutive_wins(self.conn, self.run_id),
+                repo.consecutive_losses(self.conn, self.run_id),
+            )
+
+        if summaries:
+            self._check_drawdown(summaries[-1].equity)
+
+    def _check_drawdown(self, equity: float) -> None:
+        """Alert when equity falls a configured % below its peak (plan 08 §2 thresholds:
+        WARN 5%, CRITICAL 10%).
+
+        Band bookkeeping, not a per-bar test: an alert fires when the drawdown ENTERS a
+        worse band and re-arms only after equity climbs back out of it, so a long
+        drawdown is one message rather than one per bar. Plan 08 owns the *action*
+        attached to the critical band (auto-revert to paper); a live paper run has
+        nothing to revert, so here it is a report."""
+        cfg = self.config.alerts
+        self._peak_equity = max(self._peak_equity, equity)
+        if self._peak_equity <= 0:
+            return
+        dd_pct = max(0.0, (self._peak_equity - equity) / self._peak_equity * 100.0)
+        band = 0
+        if dd_pct >= cfg.drawdown_critical_pct:
+            band = 2
+        elif dd_pct >= cfg.drawdown_warn_pct:
+            band = 1
+        if band > self._drawdown_band:
+            self.alerts.drawdown(
+                dd_pct, equity, self._peak_equity, "critical" if band == 2 else "warn"
+            )
+        self._drawdown_band = band
+
+    def _trading_day_of(self, bar_ts_iso: str) -> str:
+        return trading_day(
+            datetime.fromisoformat(bar_ts_iso),
+            self.config.trading_day_rollover_tz,
+            self.config.trading_day_rollover_time,
+        ).isoformat()
 
     def _maybe_daily_summary(self, bar_ts: datetime) -> None:
         day = trading_day(

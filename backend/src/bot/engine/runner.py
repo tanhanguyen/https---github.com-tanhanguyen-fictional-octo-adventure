@@ -51,6 +51,21 @@ class StepSummary:
     # round-trip to the DB. None whenever `closed_result` is None.
     closed_pnl_r: float | None = None
     closed_pnl_amount: float | None = None
+    # Plan 13: what the alert layer needs to describe this tick without re-querying.
+    # `opened_trade_db_id` is the PENDING row created on THIS tick (None if none was),
+    # which is what separates a `trade_pending` alert from a `trade_opened` one.
+    opened_trade_db_id: int | None = None
+    risk_multiplier: float = 1.0
+
+
+def _risk_multiplier(bundle: decision_log.DecisionBundle) -> float:
+    """The equity-curve multiplier this decision was sized with (plan 13's
+    `equity_multiplier` alert). Defaults to 1.0 when the filter is off or absent —
+    reporting a size change is never worth a KeyError inside the trading loop."""
+    result = bundle.filter_results.get("equity_curve")
+    if result is None:
+        return 1.0
+    return float(result.values.get("risk_multiplier", 1.0))
 
 
 class Runner:
@@ -282,6 +297,8 @@ class Runner:
                     equity=self.equity,
                     closed_pnl_r=None if pnl is None else pnl[0],
                     closed_pnl_amount=None if pnl is None else pnl[1],
+                    opened_trade_db_id=new_trade_db_id,
+                    risk_multiplier=_risk_multiplier(ml.bundle),
                 )
             )
 

@@ -326,6 +326,41 @@ class NewsEventOut(BaseModel):
     title: str
 
 
+class AlertOut(BaseModel):
+    """Plan 13: one row of the alert log. `body` is the structured payload the toast and
+    the history dropdown render (symbol, prices, R, equity — whatever the code carries)."""
+
+    id: int
+    run_id: int | None = None
+    source: str = ""
+    ts_utc: str
+    level: str  # INFO | WARN | ERROR | CRITICAL
+    code: str
+    title: str
+    body: dict[str, Any] = {}
+    sent_telegram: bool = False
+    telegram_status: str = "pending"
+    read: bool = False
+
+
+class AlertListOut(BaseModel):
+    """`max_id` is the cursor to send back as `since_id` on the next poll — it advances
+    even when `alerts` is empty after filtering, so a filtered poll cannot get stuck."""
+
+    alerts: list[AlertOut]
+    unread: int
+    max_id: int
+
+
+class AlertReadIn(BaseModel):
+    ids: list[int]
+
+
+class AlertReadOut(BaseModel):
+    marked: int
+    unread: int
+
+
 class LiveStatusOut(BaseModel):
     """Plan 07 §4: what the dashboard's LIVE badge needs. `running=False` (with every
     optional field left None) is the normal "nothing is live right now" answer."""

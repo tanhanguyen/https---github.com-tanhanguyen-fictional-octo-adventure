@@ -316,3 +316,33 @@ export interface LiveStatusOut {
   equity: number | null
   open_trades: number | null
 }
+
+/** Plan 13: one row of the alert log (Telegram + toast + backend log share this shape). */
+export type AlertLevel = 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL'
+
+export interface AlertOut {
+  id: number
+  run_id: number | null
+  source: string
+  ts_utc: string
+  level: AlertLevel
+  code: string
+  title: string
+  body: Record<string, unknown>
+  sent_telegram: boolean
+  telegram_status: string
+  read: boolean
+}
+
+export interface AlertListOut {
+  alerts: AlertOut[]
+  /** Unread count across the whole log — what the bell badge shows. */
+  unread: number
+  /** Cursor to send back as `since_id` next poll; advances even on an empty page. */
+  max_id: number
+}
+
+export interface AlertReadOut {
+  marked: number
+  unread: number
+}

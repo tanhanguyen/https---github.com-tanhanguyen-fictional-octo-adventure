@@ -38,7 +38,11 @@ def test_config_schema(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert "json_schema" in body
-    assert len(body["metadata"]) == 17  # 16 filters + `symbols` (plan 04)
+    # 16 filters + `symbols` (plan 04) + `alerts` (plan 13)
+    assert len(body["metadata"]) == 18
+    assert {m["field"] for m in body["metadata"]} >= {"symbols", "alerts"}
+    # Invariant #9: a new config section must arrive in the schema the form renders from.
+    assert "alerts" in body["json_schema"]["properties"]
 
 
 def test_activate_config_version_rollback(client: TestClient) -> None:

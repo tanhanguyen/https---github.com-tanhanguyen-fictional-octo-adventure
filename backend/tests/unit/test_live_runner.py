@@ -174,6 +174,7 @@ def make_live(
     cfg: BotConfig,
     source: FakeSource,
     clock: FakeClock,
+    alerts: LiveAlerts | None = None,
 ) -> LiveRunner:
     eff = effective(cfg)
     context = build_symbol_context(
@@ -184,7 +185,7 @@ def make_live(
         run_id,
         {SYMBOL: LiveSymbol(context=context, source=source)},
         cfg,
-        LiveAlerts(LogNotifier(), run_label="test"),
+        alerts if alerts is not None else LiveAlerts(LogNotifier(), run_label="test"),
         now_fn=clock,
         sleep_fn=lambda _s: None,
     )
@@ -552,4 +553,87 @@ def test_trade_rows_record_their_timeframe():
     _stream, trades, _equity, conn = run_replay(df, cfg, WARMUP)
     assert trades, "expected at least one trade in the sample"
     assert all(t[-1] == TF for t in trades)
+    conn.close()
+
+
+# ------------------------------------------------------------- plan 13: alert fan-out
+
+
+def test_a_live_run_writes_its_lifecycle_to_the_alert_log(tmp_path):
+    """Plan 13 definition of done, live half: running paper must land the trade
+    lifecycle in the alert DB, with Telegram unconfigured (log-only)."""
+    from bot.alerts import build_live_alerts, connect_alerts_db, list_alerts
+
+    df = base_bars()
+    cfg = crypto_config()
+    alerts_conn = connect_alerts_db(str(tmp_path / "alerts.db"))
+    clock = FakeClock(df.index[WARMUP].to_pydatetime() + tf_duration(TF))
+    conn = make_conn()
+    run_id = make_run(conn, cfg, "live")
+
+    live = make_live(
+        conn,
+        run_id,
+        cfg,
+        FakeSource(df),
+        clock,
+        alerts=build_live_alerts(
+            alerts_conn, cfg.alerts, run_id=run_id, source="live", now_fn=clock
+        ),
+    )
+    live.start()
+    end = df.index[-1].to_pydatetime() + tf_duration(TF) * 2
+    while clock() <= end:
+        live.poll()
+        live.drain()
+        clock.advance(tf_duration(TF))
+
+    rows = list_alerts(alerts_conn, limit=500)
+    codes = [r.code for r in rows]
+    assert codes[-1] == "runner_started"  # oldest row: the run announced itself
+    assert {"trade_pending", "trade_opened", "trade_closed"} <= set(codes)
+    assert all(r.run_id == run_id and r.source == "live" for r in rows)
+    # No token in the test environment: every row is logged, none was sent.
+    assert not any(r.sent_telegram for r in rows)
+    # The body is what the toast renders, so it must actually carry the numbers.
+    opened = next(r for r in rows if r.code == "trade_opened")
+    assert opened.body["symbol"] == SYMBOL
+    assert opened.body["entry"] is not None and opened.body["sl"] is not None
+
+    alerts_conn.close()
+    conn.close()
+
+
+def test_a_degraded_feed_alerts_once_per_transition_into_the_alert_log(tmp_path):
+    from bot.alerts import build_live_alerts, connect_alerts_db, list_alerts
+
+    df = base_bars()
+    cfg = crypto_config()
+    alerts_conn = connect_alerts_db(str(tmp_path / "alerts.db"))
+    clock = FakeClock(df.index[WARMUP].to_pydatetime() + tf_duration(TF))
+    conn = make_conn()
+    run_id = make_run(conn, cfg, "live")
+    source = FakeSource(df)
+    live = make_live(
+        conn,
+        run_id,
+        cfg,
+        source,
+        clock,
+        alerts=build_live_alerts(
+            alerts_conn, cfg.alerts, run_id=run_id, source="live", now_fn=clock
+        ),
+    )
+    live.start()
+
+    source.fail_next = 3
+    for _ in range(3):
+        live.poll()
+        clock.advance(tf_duration(TF))
+    live.poll()  # recovered
+
+    codes = [r.code for r in list_alerts(alerts_conn, limit=100)]
+    assert codes.count("feed_degraded") == 1  # not once per failed poll
+    assert codes.count("feed_recovered") == 1
+    alerts_conn.close()
     conn.close()
