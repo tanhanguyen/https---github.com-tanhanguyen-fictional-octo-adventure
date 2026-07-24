@@ -547,3 +547,63 @@ input[type='text'] {
   line-height: 1;
   padding: 0 2px;
 }
+
+/* Fetch-error toasts sit at the bottom-right so they don't collide with the alert
+   toast-stack pinned at the top-right (plan 09 §3). */
+.toast-stack-errors {
+  top: auto;
+  bottom: 20px;
+}
+
+.toast-retry {
+  align-self: center;
+  white-space: nowrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-h);
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.toast-retry:hover {
+  border-color: var(--accent-border);
+}
+
+/* Fail-open confirmation dialog + the ErrorBoundary fallback (plan 09 §3, §4). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  width: min(460px, calc(100vw - 40px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 20px 22px;
+}
+
+.modal h3 {
+  margin-top: 0;
+}
+
+.error-fallback {
+  border-left: 4px solid #b3261e;
+}
+
+.token-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+}

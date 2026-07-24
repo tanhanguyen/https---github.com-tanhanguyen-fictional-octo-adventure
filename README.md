@@ -215,6 +215,16 @@ không nối được cổng 8000. Kiểm tra log ở Terminal 1 và `curl local
    Config (`filters.dxy.dataset_id` = id dataset DXY). Không có thì filter `dxy` dùng synthetic
    như cũ hoặc tắt đi.
 
+### Cách D — Docker (chạy production bằng một lệnh, plan 09)
+
+```bash
+cp .env.example .env      # đặt BOT_API_TOKEN nếu mở ra ngoài LAN
+docker compose up -d      # api + web; mở http://localhost:8080
+```
+
+Đóng gói, auth (token), backup DB (`backend/scripts/backup_db.sh`, giữ 7 bản), xem log JSON,
+xoay token và checklist khi live runner chết — xem **[docs/ops.md](docs/ops.md)**.
+
 ---
 
 ## 4. Kiểm thử

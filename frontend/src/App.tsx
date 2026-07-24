@@ -1,7 +1,11 @@
+import type { ReactNode } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import './App.css'
 import { AlertCenter } from './components/AlertCenter'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { GlobalErrorToasts } from './components/GlobalErrorToasts'
 import { LiveBadge } from './components/LiveBadge'
+import { TokenGate } from './components/TokenGate'
 import { ConfigPage } from './pages/ConfigPage'
 import { Dashboard } from './pages/Dashboard'
 import { DatasetsPage } from './pages/DatasetsPage'
@@ -35,20 +39,28 @@ function App() {
         </NavLink>
         <LiveBadge />
         <AlertCenter />
+        <TokenGate />
       </nav>
       <main className="app-main">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/config" element={<ConfigPage />} />
-          <Route path="/datasets" element={<DatasetsPage />} />
-          <Route path="/decisions" element={<DecisionsPage />} />
-          <Route path="/trades" element={<TradesPage />} />
-          <Route path="/runs" element={<RunsPage />} />
-          <Route path="/runs/:id/report" element={<RunReportPage />} />
+          <Route path="/" element={page(<Dashboard />)} />
+          <Route path="/config" element={page(<ConfigPage />)} />
+          <Route path="/datasets" element={page(<DatasetsPage />)} />
+          <Route path="/decisions" element={page(<DecisionsPage />)} />
+          <Route path="/trades" element={page(<TradesPage />)} />
+          <Route path="/runs" element={page(<RunsPage />)} />
+          <Route path="/runs/:id/report" element={page(<RunReportPage />)} />
         </Routes>
       </main>
+      <GlobalErrorToasts />
     </div>
   )
+}
+
+/** Each routed page gets its own error boundary so one page crashing never blanks the
+ * whole app (plan 09 §3). */
+function page(node: ReactNode) {
+  return <ErrorBoundary>{node}</ErrorBoundary>
 }
 
 export default App

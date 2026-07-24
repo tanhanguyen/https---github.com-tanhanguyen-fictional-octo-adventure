@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -108,9 +107,9 @@ class TelegramNotifier:
 def build_notifier(
     env: Mapping[str, str] | None = None, http_post: HttpPostFn | None = None
 ) -> Notifier:
-    environ = env if env is not None else os.environ
-    token = environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = environ.get("TELEGRAM_CHAT_ID", "").strip()
+    from bot import settings
+
+    token, chat_id = settings.telegram_credentials(env)
     if token and chat_id:
         return TelegramNotifier(token, chat_id, http_post=http_post)
     if token or chat_id:

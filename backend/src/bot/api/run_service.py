@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -48,6 +49,8 @@ from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
 from bot.notify import LiveAlerts
 
+logger = logging.getLogger("bot.run")
+
 _R = TypeVar("_R")
 
 #: How many (dataset, config-version) price bundles `_price_frames` keeps resident.
@@ -73,10 +76,9 @@ def _locked(fn: Callable[..., _R]) -> Callable[..., _R]:
 
 
 def default_db_path() -> str:
-    backend_root = Path(__file__).resolve().parents[3]
-    data_dir = backend_root / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return str(data_dir / "runtime.db")
+    from bot import settings
+
+    return settings.runtime_db_path()
 
 
 class RunnerService:
@@ -402,6 +404,17 @@ class RunnerService:
             self.config_version_id = int(cfg_row["id"])
             self._rebuild_alerts(run_db_id)
 
+            logger.info(
+                "run created",
+                extra={
+                    "event": "run_created",
+                    "run_id": run_db_id,
+                    "symbols": sorted(symbol_datasets),
+                    "config_version_id": int(cfg_row["id"]),
+                    "bars": bars,
+                    "seed": seed,
+                },
+            )
             return self._run_info(run_db_id)
 
     def _run_info(self, run_db_id: int) -> dict[str, Any]:
@@ -470,6 +483,10 @@ class RunnerService:
             t = threading.Thread(target=self._play_loop, args=(interval_ms,), daemon=True)
             self._play_thread = t
             t.start()
+            logger.info(
+                "run play started",
+                extra={"event": "run_play", "run_id": self.run_id, "interval_ms": interval_ms},
+            )
 
     def _play_loop(self, interval_ms: int) -> None:
         while not self._stop_event.is_set():
@@ -499,11 +516,14 @@ class RunnerService:
 
     def reset(self) -> None:
         with self.lock:
+            ended = self.run_id
             self._stop_play_locked()
             self.runner = None
             self.run_id = None
             self.symbol_datasets_active = None
             self.config_version_id = None
+            if ended is not None:
+                logger.info("run reset", extra={"event": "run_reset", "run_id": ended})
 
     # ----------------------------------------------------------------- account
     def _starting_equity_for_run(self, run_id: int) -> float:

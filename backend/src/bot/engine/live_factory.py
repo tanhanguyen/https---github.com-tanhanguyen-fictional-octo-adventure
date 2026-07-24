@@ -17,11 +17,9 @@ account-wide, so one process per symbol would quietly disable every portfolio-le
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from bot.config.loader import load_default_config, load_instruments
@@ -47,13 +45,9 @@ SUPPORTED_LIVE_SYMBOL_TYPES = {"CRYPTO", "STOCK_VN_CASH", "STOCK_VN_DERIV"}
 
 
 def default_live_db_path() -> str:
-    env = os.environ.get("BOT_DB_PATH")
-    if env:
-        return env
-    backend_root = Path(__file__).resolve().parents[3]
-    data_dir = backend_root / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return str(data_dir / "live.db")
+    from bot import settings
+
+    return settings.live_db_path()
 
 
 def _instrument(symbol: str, instruments_yaml: dict[str, Any]) -> InstrumentSpec:

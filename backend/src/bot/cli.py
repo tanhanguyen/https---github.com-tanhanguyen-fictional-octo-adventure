@@ -266,6 +266,11 @@ def cmd_live(symbol: str | None, db_path: str | None, testnet: bool, iterations:
     from bot.alerts import build_live_alerts, connect_alerts_db, default_alerts_db_path
     from bot.data.live_feed import BINANCE_FUTURES_MAINNET, BINANCE_FUTURES_TESTNET
     from bot.engine.live_factory import build_live_session
+    from bot.logging_config import configure_logging
+
+    # The live runner is the long-running, Docker-collected process: send its operational
+    # events (feed degraded, trade opened/closed, errors) to stdout as JSON lines.
+    configure_logging()
 
     # Plan 13: this is the composition root that decides a live run's alerts go to the
     # shared alert log (and from there to Telegram + the web UI), not just to a logger.

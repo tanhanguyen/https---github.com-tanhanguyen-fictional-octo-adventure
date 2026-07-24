@@ -28,6 +28,40 @@ import type {
 
 const http = axios.create({ baseURL: '/api' })
 
+// --- API token (plan 09 §2) -------------------------------------------------------------
+// When the backend has BOT_API_TOKEN set, every call needs `Authorization: Bearer <token>`.
+// We keep the token in localStorage, attach it to every request, and on a 401 broadcast an
+// event so the UI can prompt for it. No token backend -> header is simply ignored.
+const TOKEN_KEY = 'bot_api_token'
+
+export function getApiToken(): string {
+  return localStorage.getItem(TOKEN_KEY) ?? ''
+}
+
+export function setApiToken(token: string): void {
+  const trimmed = token.trim()
+  if (trimmed) localStorage.setItem(TOKEN_KEY, trimmed)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+export const UNAUTHORIZED_EVENT = 'bot:unauthorized'
+
+http.interceptors.request.use((config) => {
+  const token = getApiToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+http.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    if ((err as { response?: { status?: number } })?.response?.status === 401) {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    }
+    return Promise.reject(err)
+  },
+)
+
 /** FastAPI puts the human-readable message in `detail`; fall back to the raw error. */
 export function errorDetail(err: unknown): string {
   const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail

@@ -10,6 +10,15 @@ interface Props {
   onChanged: () => void
 }
 
+/** The two regime filters are ADX and ER. Disabling BOTH forces the bot into BREAKOUT at
+ * every bar (fail-open — see decisions.md "Mapping"). User chốt 2026-07-18 (đợt 3):
+ * turning off the SECOND one must be confirmed, as it silently removes regime detection. */
+function regimePartnerOf(id: string): string | null {
+  if (id === 'adx_filter') return 'er_filter'
+  if (id === 'er_filter') return 'adx_filter'
+  return null
+}
+
 function resolveRef(root: JsonSchema, node: JsonSchema): JsonSchema {
   if (node && typeof node === 'object' && '$ref' in node) {
     const path = String(node['$ref']).replace('#/', '').split('/')
@@ -92,6 +101,9 @@ function SymbolsJsonEditor({ config, onChanged }: { config: ConfigOut; onChanged
 
 export function FilterConfigPanel({ schema, config, onChanged }: Props) {
   const [pending, setPending] = useState<Record<string, boolean>>({})
+  // When set, the fail-open confirm dialog is open for this filter id (disabling the
+  // second regime filter). The change is applied only if the user confirms.
+  const [failOpenConfirm, setFailOpenConfirm] = useState<string | null>(null)
   const root = schema.json_schema
 
   const filtersRootDef = useMemo(() => {
@@ -114,8 +126,49 @@ export function FilterConfigPanel({ schema, config, onChanged }: Props) {
     }
   }
 
+  /** Would disabling `id` leave BOTH regime filters off? (its partner already off.) */
+  function disablingWouldFailOpen(id: string): boolean {
+    const partner = regimePartnerOf(id)
+    if (partner === null) return false
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const partnerCfg: Record<string, any> = config.config.filters?.[partner] ?? {}
+    return !partnerCfg.enabled
+  }
+
+  /** Enabled-checkbox handler: intercept the second regime toggle-off with a confirm. */
+  function onToggleEnabled(id: string, checked: boolean) {
+    if (!checked && disablingWouldFailOpen(id)) {
+      setFailOpenConfirm(id)
+      return
+    }
+    void patchFilter(id, { enabled: checked })
+  }
+
+  async function confirmFailOpen() {
+    const id = failOpenConfirm
+    setFailOpenConfirm(null)
+    if (id !== null) await patchFilter(id, { enabled: false })
+  }
+
   return (
     <div className="card">
+      {failOpenConfirm !== null && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Xác nhận fail-open">
+          <div className="modal">
+            <h3>⚠️ Tắt nhận diện regime?</h3>
+            <p>
+              Cả hai bộ lọc regime (ADX và ER) sẽ tắt. Bot sẽ <strong>luôn chạy Breakout</strong>,
+              không còn nhận diện regime (fail-open). Bạn có chắc chắn?
+            </p>
+            <div className="toolbar">
+              <button className="primary" onClick={() => void confirmFailOpen()}>
+                Vẫn tắt
+              </button>
+              <button onClick={() => setFailOpenConfirm(null)}>Huỷ</button>
+            </div>
+          </div>
+        </div>
+      )}
       <h2>Cấu hình bộ lọc ({sortedMeta.length})</h2>
       <p className="muted">
         Render trực tiếp từ <code>/api/config/schema</code> — thêm filter mới không cần sửa
@@ -139,7 +192,7 @@ export function FilterConfigPanel({ schema, config, onChanged }: Props) {
                   type="checkbox"
                   checked={Boolean(filterCfg.enabled)}
                   disabled={busy || m.locked}
-                  onChange={(e) => patchFilter(id, { enabled: e.target.checked })}
+                  onChange={(e) => onToggleEnabled(id, e.target.checked)}
                 />
                 <span>
                   {m.ordinal}. {m.label_vi}

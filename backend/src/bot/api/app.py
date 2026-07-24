@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bot.alerts.store import connect_alerts_db, default_alerts_db_path
+from bot.api.auth import BearerTokenMiddleware
 from bot.api.routers import (
     account,
     alerts,
@@ -23,6 +24,8 @@ from bot.api.routers import (
     trades,
 )
 from bot.api.run_service import RunnerService, default_db_path
+from bot.logging_config import configure_logging
+from bot.settings import api_token
 
 
 def _alerts_db_for(db_path: str | None) -> str:
@@ -37,7 +40,14 @@ def _alerts_db_for(db_path: str | None) -> str:
 
 
 def create_app(db_path: str | None = None, alerts_db_path: str | None = None) -> FastAPI:
+    configure_logging()
     app = FastAPI(title="Trading Bot API")
+    # Auth runs BEFORE CORS in the request path. Middleware added later wraps earlier ones,
+    # so adding CORS after the token check puts CORS outermost -- a browser preflight
+    # (OPTIONS, no Authorization header) still gets its CORS headers instead of a 401.
+    token = api_token()
+    if token:
+        app.add_middleware(BearerTokenMiddleware, token=token)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],

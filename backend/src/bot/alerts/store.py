@@ -22,10 +22,8 @@ block each other into an error.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 #: How long a writer waits for a competing writer before giving up. Alert writes are
@@ -66,13 +64,9 @@ TELEGRAM_MUTED = "muted"  # below threshold / muted code / channel off -> never 
 
 
 def default_alerts_db_path() -> str:
-    env = os.environ.get("BOT_ALERTS_DB_PATH")
-    if env:
-        return env
-    backend_root = Path(__file__).resolve().parents[3]
-    data_dir = backend_root / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return str(data_dir / "alerts.db")
+    from bot import settings
+
+    return settings.alerts_db_path()
 
 
 def connect_alerts_db(db_path: str | None = None) -> sqlite3.Connection:

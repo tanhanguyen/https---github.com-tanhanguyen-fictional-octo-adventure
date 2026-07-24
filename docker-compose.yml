@@ -1,0 +1,48 @@
+# One-command deployment (plan 09 §1). `docker compose up -d` brings up the dashboard
+# (web) and the API. The live paper-trading runner is a separate opt-in profile so it
+# never auto-starts alongside the read-only dashboard.
+#
+#   docker compose up -d                 # api + web
+#   docker compose --profile live up -d  # also start the live runner (plan 07)
+#
+# Copy .env.example -> .env first; compose reads it automatically.
+
+services:
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      # Inside the container the data dir is /app/data (the mounted volume below).
+      BOT_DB_PATH: /app/data/live.db
+      BOT_ALERTS_DB_PATH: /app/data/alerts.db
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web:
+    build: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "${BOT_WEB_PORT:-8080}:80"
+    restart: unless-stopped
+
+  # Live paper-trading runner (plan 07). Opt-in: only starts with `--profile live`.
+  # Shares the data volume so it writes the same live.db the API reads read-only.
+  live:
+    build: ./backend
+    profiles: ["live"]
+    env_file: .env
+    environment:
+      BOT_DB_PATH: /app/data/live.db
+      BOT_ALERTS_DB_PATH: /app/data/alerts.db
+    volumes:
+      - ./backend/data:/app/data
+    command: ["python", "-m", "bot.cli", "live"]
+    restart: unless-stopped
