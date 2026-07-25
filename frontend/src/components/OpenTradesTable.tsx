@@ -1,3 +1,4 @@
+import { api } from '../api/client'
 import type { TradeOut } from '../api/types'
 
 function resultPill(trade: TradeOut) {
@@ -9,9 +10,11 @@ function resultPill(trade: TradeOut) {
 export function OpenTradesTable({
   trades,
   onSelect,
+  onOpenSnapshot,
 }: {
   trades: TradeOut[]
   onSelect?: (id: number) => void
+  onOpenSnapshot?: (id: number) => void
 }) {
   return (
     <div className="card">
@@ -31,6 +34,7 @@ export function OpenTradesTable({
               <th>Lot</th>
               <th>PnL (R)</th>
               <th>Kết quả</th>
+              <th>Chart</th>
             </tr>
           </thead>
           <tbody>
@@ -47,11 +51,30 @@ export function OpenTradesTable({
                 <td>{t.lot_size?.toFixed(2) ?? '—'}</td>
                 <td>{t.pnl_r != null ? t.pnl_r.toFixed(2) : '—'}</td>
                 <td>{resultPill(t)}</td>
+                <td>
+                  {t.opened_at_utc && (
+                    <img
+                      src={api.tradeSnapshotUrl(t.id, 'open')}
+                      alt={`snapshot #${t.id}`}
+                      loading="lazy"
+                      width={64}
+                      height={38}
+                      style={{ objectFit: 'cover', borderRadius: 4, cursor: 'pointer' }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onOpenSnapshot?.(t.id)
+                      }}
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                  )}
+                </td>
               </tr>
             ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan={11} className="muted">
+                <td colSpan={12} className="muted">
                   Chưa có lệnh nào.
                 </td>
               </tr>

@@ -312,6 +312,17 @@ class LiveAlerts:
             {"drawdown_pct": drawdown_pct, "equity": equity, "peak_equity": peak},
         )
 
+    # ------------------------------------------------------------ chart snapshot
+    def snapshot_error(self, symbol: str, trade_id: int, at: str, detail: str) -> None:
+        """Plan 14: a render failure never crashes the runner (the trade itself is
+        already committed) — this just reports it."""
+        self._emit(
+            "snapshot_error",
+            f"📷 lỗi render ảnh chart {symbol} #{trade_id} ({at}) — {detail}",
+            {"symbol": symbol, "trade_id": trade_id, "at": at, "detail": detail},
+            dedupe_key=f"{trade_id}:{at}",
+        )
+
     # ------------------------------------------------------------- process health
     def started(self, detail: str, symbols: list[str] | None = None) -> None:
         self._emit(

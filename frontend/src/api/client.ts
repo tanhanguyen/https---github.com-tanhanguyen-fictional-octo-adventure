@@ -62,6 +62,9 @@ export const api = {
       .get<TradeOut[]>('/trades', { params: { ...(status ? { status } : {}), ...(symbol ? { symbol } : {}) } })
       .then((r) => r.data),
   getTrade: (id: number) => http.get<TradeDetailOut>(`/trades/${id}`).then((r) => r.data),
+  // Plan 14: served straight as an <img src>, not through axios — the backend renders
+  // on-demand for backtest trades and serves the eager-captured PNG otherwise.
+  tradeSnapshotUrl: (id: number, at: 'open' | 'close') => `/api/trades/${id}/snapshot?at=${at}`,
 
   listDecisions: (
     params: { limit?: number; reason?: string; outcome?: string; symbol?: string } = {},

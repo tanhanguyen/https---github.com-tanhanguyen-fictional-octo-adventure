@@ -290,6 +290,10 @@ class BarOut(BaseModel):
     high: float
     low: float
     close: float
+    # EMA34/89 (plan 03 chart overlay), computed over the full closed history the engine
+    # saw. None until enough bars exist to seed the SMA (period-1 leading bars).
+    ema34: float | None = None
+    ema89: float | None = None
 
 
 class RunStepOut(BaseModel):

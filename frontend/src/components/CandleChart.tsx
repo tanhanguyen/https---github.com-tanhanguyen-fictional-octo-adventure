@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
   CandlestickSeries,
+  LineSeries,
   LineStyle,
   createChart,
   createSeriesMarkers,
@@ -44,11 +45,15 @@ function snapToBar(t: UTCTimestamp, barTimes: number[]): UTCTimestamp | null {
 const GREEN = '#16a34a'
 const RED = '#dc2626'
 const BLUE = '#2563eb'
+const EMA_FAST = '#2563eb' // EMA34 — same blue family as the snapshot PNG (#1f77b4)
+const EMA_SLOW = '#f97316' // EMA89 — orange, matches the snapshot PNG (#ff7f0e)
 
 export function CandleChart({ bars, trades, height = 320 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const emaFastRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const emaSlowRef = useRef<ISeriesApi<'Line'> | null>(null)
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
 
@@ -66,13 +71,31 @@ export function CandleChart({ bars, trades, height = 320 }: Props) {
       wickUpColor: GREEN,
       wickDownColor: RED,
     })
+    const emaFast = chart.addSeries(LineSeries, {
+      color: EMA_FAST,
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      title: 'EMA34',
+    })
+    const emaSlow = chart.addSeries(LineSeries, {
+      color: EMA_SLOW,
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      title: 'EMA89',
+    })
     chartRef.current = chart
     seriesRef.current = series
+    emaFastRef.current = emaFast
+    emaSlowRef.current = emaSlow
     markersRef.current = createSeriesMarkers(series, [])
     return () => {
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      emaFastRef.current = null
+      emaSlowRef.current = null
       markersRef.current = null
       priceLinesRef.current = []
     }
@@ -87,6 +110,18 @@ export function CandleChart({ bars, trades, height = 320 }: Props) {
         low: b.low,
         close: b.close,
       })),
+    )
+    // EMA series: skip bars still in the SMA-seeding warmup (null), or lightweight-charts
+    // throws on a null value.
+    emaFastRef.current?.setData(
+      bars
+        .filter((b) => b.ema34 != null)
+        .map((b) => ({ time: toTime(b.ts_utc), value: b.ema34 as number })),
+    )
+    emaSlowRef.current?.setData(
+      bars
+        .filter((b) => b.ema89 != null)
+        .map((b) => ({ time: toTime(b.ts_utc), value: b.ema89 as number })),
     )
   }, [bars])
 

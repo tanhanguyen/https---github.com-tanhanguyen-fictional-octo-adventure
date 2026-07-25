@@ -59,6 +59,15 @@ list/DataFrame thuần để test tay được). Output dataclass `RunReport`:
   `GET /api/runs/{id}/bars?tf=1H&from=&to=` trả OHLC đã đóng tới bar hiện tại của run).
   Markers: entry (mũi tên theo direction), SL/TP lines của trade đang mở, exit markers.
   Đây là phần việc frontend lớn nhất — làm sau cùng, các phần trên không phụ thuộc nó.
+  - **Overlay EMA34 + EMA89** (bổ sung 2026-07-24): endpoint `bars` trả thêm 2 cột
+    `ema34`, `ema89` mỗi nến; frontend vẽ 2 `LineSeries` (EMA34 xanh, EMA89 cam — cùng
+    bảng màu với ảnh snapshot plan 14 để nhìn 2 nơi thấy như nhau). Ràng buộc quan trọng:
+    EMA là chỉ báo đệ quy → phải tính trên **toàn bộ lịch sử đã đóng** của run (seed bằng
+    SMA `period` nến đầu), KHÔNG tính lại trên cửa sổ `from/to/limit` (sẽ sai ở mép trái).
+    EMA phải **causal / no-lookahead**: giá trị tại nến t chỉ phụ thuộc nến ≤ t, nên khi
+    step thêm 1 nến các giá trị cũ không đổi (đã kiểm trong
+    `test_bars_no_lookahead_grows_one_candle_per_step`). Những nến còn trong giai đoạn
+    warmup (chưa đủ `period` nến để seed SMA) trả `null` — frontend bỏ qua khi vẽ.
 
 ## Ràng buộc
 

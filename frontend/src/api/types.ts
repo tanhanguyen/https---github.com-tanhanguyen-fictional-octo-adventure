@@ -287,6 +287,8 @@ export interface BarOut {
   high: number
   low: number
   close: number
+  ema34: number | null
+  ema89: number | null
 }
 
 export interface RunStepOut {

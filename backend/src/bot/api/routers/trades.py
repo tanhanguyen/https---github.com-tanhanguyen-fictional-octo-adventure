@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from bot.api.deps import get_runner_service
 from bot.api.run_service import RunnerService
 from bot.api.schemas import TradeDetailOut, TradeEventOut, TradeOut
+from bot.core.errors import ConfigError
 
 router = APIRouter()
 
@@ -62,3 +64,28 @@ def get_trade(
     ]
     base = _row_to_trade(row)
     return TradeDetailOut(**base.model_dump(), trade_events=events)
+
+
+@router.get("/trades/{trade_id}/snapshot")
+def get_trade_snapshot(
+    trade_id: int,
+    at: str = Query(..., pattern="^(open|close)$"),
+    service: RunnerService = Depends(get_runner_service),
+) -> FileResponse:
+    """Plan 14: return the trade's chart snapshot PNG. Backtest runs render fresh on every
+    request (deterministic, never stale); live/paper runs serve the eager capture taken at
+    fill/close. `render_trade_snapshot` owns that live-vs-backtest decision so a leftover
+    file on disk can never be served for the wrong trade (ids are not unique across DB
+    lifetimes)."""
+    row = service.get_trade(trade_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="trade not found")
+    try:
+        path = service.render_trade_snapshot(trade_id, at)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="trade or run not found") from exc
+    except ConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type="image/png")

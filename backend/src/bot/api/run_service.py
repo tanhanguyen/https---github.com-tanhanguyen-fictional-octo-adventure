@@ -46,7 +46,9 @@ from bot.engine.announce import announce_trade_events
 from bot.engine.context import SymbolContext, build_symbol_context
 from bot.engine.runner import Runner, StepSummary
 from bot.filters.registry import ALL_FILTER_IDS
+from bot.indicators.ema import ema
 from bot.notify import LiveAlerts
+from bot.report import snapshot as chart_snapshot
 
 _R = TypeVar("_R")
 
@@ -88,6 +90,10 @@ class RunnerService:
         migrate(self.conn)
 
         self.lock = threading.RLock()
+        # Serializes matplotlib renders (pyplot global state isn't thread-safe) WITHOUT
+        # holding `self.lock`, so a chart render can't stall DB polling — see
+        # `render_trade_snapshot`.
+        self._render_lock = threading.Lock()
         self.instruments_yaml = load_instruments()
 
         self.run_id: int | None = None
@@ -622,6 +628,74 @@ class RunnerService:
         )
         return list(cur.fetchall())
 
+    # ------------------------------------------------------------ chart snapshot
+    def render_trade_snapshot(self, trade_id: int, at: str) -> Path:
+        """Plan 14: return the PNG for a trade's open/close snapshot.
+
+        Backtest runs render fresh **every call** (deterministic — same dataset + config
+        version reproduce the exact frame the run saw). We intentionally do NOT serve a
+        pre-existing file on disk: `snapshots/{run_id}/{trade_id}_{at}.png` is keyed by ids
+        that are only unique within one DB lifetime, so a leftover file from a prior run
+        (e.g. after the runtime DB is recreated, or ids collide across a different symbol)
+        would otherwise be served for the wrong trade. Re-rendering can never be stale.
+
+        Live/paper runs are the exception: their dataset is a venue stream with no stored
+        bars, so the eager capture taken at fill/close time is the only source — serve it if
+        present, else there is nothing to show.
+
+        NOT `@_locked` as a whole: only the DB reads (`_snapshot_inputs`) hold `self.lock`.
+        The matplotlib render is ~100ms of pure CPU that never touches `self.conn`; holding
+        the sqlite lock across it would serialize every open trade's `<img>` request against
+        the play loop and all dashboard polling, leaving requests stuck "pending" while a run
+        is playing. Rendering runs under a dedicated `_render_lock` (matplotlib/pyplot global
+        state is not thread-safe) so renders serialize with each other but not with the DB."""
+        inputs = self._snapshot_inputs(trade_id, at)
+        if isinstance(inputs, Path):  # live/paper: eager-captured PNG, nothing to render
+            return inputs
+        with self._render_lock:
+            return chart_snapshot.render_gathered(inputs)
+
+    @_locked
+    def _snapshot_inputs(self, trade_id: int, at: str) -> chart_snapshot.SnapshotInputs | Path:
+        """DB half of `render_trade_snapshot` (holds `self.lock`): resolve the trade to its
+        dataset and gather the render inputs. Returns a `Path` directly for live/paper trades
+        (their PNG is the eager capture, not re-rendered)."""
+        trade = repo.get_trade(self.conn, trade_id)
+        if trade is None:
+            raise KeyError(trade_id)
+        run_id = int(trade["run_id"])
+        run = self.get_run_row(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        ts_str = trade["opened_at_utc"] if at == "open" else trade["closed_at_utc"]
+        if ts_str is None:
+            raise ConfigError(f"trade {trade_id} has no {at!r} timestamp yet")
+        tf = trade["timeframe"]
+        if not tf:
+            raise ConfigError(f"trade {trade_id} has no timeframe recorded")
+
+        symbol_datasets = repo.get_run_symbol_datasets(self.conn, run_id)
+        dataset_id = symbol_datasets.get(str(trade["symbol"]), run["dataset_id"])
+        dataset_row = repo.get_dataset(self.conn, dataset_id)
+        if dataset_row is not None and dataset_row["kind"] == "live":
+            eager = chart_snapshot.trade_snapshot_path(run_id, trade_id, at)
+            if eager.exists():
+                return eager
+            raise ConfigError(
+                "no snapshot was captured for this live trade "
+                "(a live run's dataset is a venue stream, not stored bars — it cannot be "
+                "rendered on demand)"
+            )
+
+        frames = self._price_frames(dataset_id, int(run["config_version_id"]))
+        if tf not in frames:
+            raise ConfigError(f"timeframe {tf!r} is not available for this dataset")
+        price_feed = Feed(frames=frames)
+        now = (pd.Timestamp(ts_str) + TF_DURATION[tf]).to_pydatetime()
+        return chart_snapshot.gather_snapshot_inputs(
+            self.conn, price_feed, run_id, trade_id, at, now
+        )
+
     # ---------------------------------------------------------------- decisions
     @_locked
     def list_decisions(
@@ -877,22 +951,44 @@ class RunnerService:
                 return t.tz_localize(index_tz) if t.tz is None else t.tz_convert(index_tz)
             return t.tz_convert("UTC").tz_localize(None) if t.tz is not None else t
 
-        visible = df[df.index + TF_DURATION[tf] <= _aligned(last["bar_ts_utc"])]
+        # EMA34/89 must be seeded from the full closed history the engine saw — computing
+        # them over only the from/to/limit window would give wrong values at the left edge
+        # (an EMA is recursive). So compute on `closed` (everything closed as of now, no
+        # future bars — C11), then align to whatever sub-window we return.
+        closed = df[df.index + TF_DURATION[tf] <= _aligned(last["bar_ts_utc"])]
+        ema_fast = ema(closed["close"], chart_snapshot.EMA_FAST_PERIOD)
+        ema_slow = ema(closed["close"], chart_snapshot.EMA_SLOW_PERIOD)
+
+        visible = closed
         if from_ts:
             visible = visible[visible.index >= _aligned(from_ts)]
         if to_ts:
             visible = visible[visible.index <= _aligned(to_ts)]
         if limit > 0 and len(visible) > limit:
             visible = visible.iloc[-limit:]
+
+        def _f(x: float) -> float | None:
+            return None if pd.isna(x) else float(x)
+
         # Column-wise .tolist() instead of iterrows(): the latter boxes a Series per bar.
         return [
-            {"ts_utc": ts.isoformat(), "open": o, "high": h, "low": lo, "close": c}
-            for ts, o, h, lo, c in zip(
+            {
+                "ts_utc": ts.isoformat(),
+                "open": o,
+                "high": h,
+                "low": lo,
+                "close": c,
+                "ema34": _f(f34),
+                "ema89": _f(f89),
+            }
+            for ts, o, h, lo, c, f34, f89 in zip(
                 visible.index,
                 visible["open"].astype(float).tolist(),
                 visible["high"].astype(float).tolist(),
                 visible["low"].astype(float).tolist(),
                 visible["close"].astype(float).tolist(),
+                ema_fast.loc[visible.index].tolist(),
+                ema_slow.loc[visible.index].tolist(),
                 strict=True,
             )
         ]

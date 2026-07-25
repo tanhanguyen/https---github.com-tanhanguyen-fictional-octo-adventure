@@ -193,14 +193,19 @@ class TradeRecord:
     # Plan 07: the timeframe this trade was opened on, snapshotted so the hold rules
     # (TF <= H1 vs TF > H1) stay auditable when the config changes later.
     timeframe: str | None = None
+    # Plan 14: the breakout range at signal time (None for mean reversion), snapshotted
+    # here so an on-demand chart render can redraw it later (see migration 006).
+    range_high: float | None = None
+    range_low: float | None = None
 
 
 def insert_trade(conn: sqlite3.Connection, t: TradeRecord) -> int:
     cur = conn.execute(
         "INSERT INTO trade(run_id, symbol, strategy, direction, status, entry_price, "
         "sl_price, tp1_price, tp2_price, lot_size, opened_at_utc, closed_at_utc, "
-        "trading_day, result, pnl_amount, pnl_r, decision_id, timeframe) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "trading_day, result, pnl_amount, pnl_r, decision_id, timeframe, "
+        "range_high, range_low) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             t.run_id,
             t.symbol,
@@ -220,6 +225,8 @@ def insert_trade(conn: sqlite3.Connection, t: TradeRecord) -> int:
             t.pnl_r,
             t.decision_id,
             t.timeframe,
+            t.range_high,
+            t.range_low,
         ),
     )
     conn.commit()
@@ -486,6 +493,24 @@ def decision_exists(conn: sqlite3.Connection, run_id: int, symbol: str, bar_ts_u
         (run_id, symbol, bar_ts_utc),
     )
     return cur.fetchone() is not None
+
+
+def get_trade(conn: sqlite3.Connection, trade_id: int) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM trade WHERE id=?", (trade_id,))
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def signal_decision_for_trade(conn: sqlite3.Connection, trade_id: int) -> sqlite3.Row | None:
+    """Plan 14: the `done`/`place_order` decision that created this trade — its
+    `bar_ts_utc` is the signal bar, used as the snapshot's signal marker. `ORDER BY id
+    ASC LIMIT 1` because `trade_id` is unique to the tick that created the PENDING row."""
+    cur = conn.execute(
+        "SELECT * FROM decision WHERE trade_id=? AND reason='done' ORDER BY id ASC LIMIT 1",
+        (trade_id,),
+    )
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
 
 
 def open_trades_for_run(conn: sqlite3.Connection, run_id: int) -> list[sqlite3.Row]:

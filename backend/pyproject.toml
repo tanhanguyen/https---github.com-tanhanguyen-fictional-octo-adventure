@@ -10,6 +10,8 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
     "pyyaml>=6.0",
+    "matplotlib>=3.8",
+    "mplfinance>=0.12",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +45,7 @@ warn_unused_ignores = false
 files = ["src/bot"]
 
 [[tool.mypy.overrides]]
-module = ["pandas.*", "numpy.*", "yaml.*", "uvicorn.*"]
+module = ["pandas.*", "numpy.*", "yaml.*", "uvicorn.*", "mplfinance.*", "matplotlib.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

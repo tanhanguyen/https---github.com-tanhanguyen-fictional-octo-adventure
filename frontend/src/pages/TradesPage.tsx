@@ -7,6 +7,7 @@ export function TradesPage() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [symbolFilter, setSymbolFilter] = useState<string>('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [snapshotTradeId, setSnapshotTradeId] = useState<number | null>(null)
 
   const { data: config } = usePolling(() => api.getConfig(), 60_000, true)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,7 +55,11 @@ export function TradesPage() {
           ))}
         </div>
       )}
-      <OpenTradesTable trades={trades ?? []} onSelect={setSelectedId} />
+      <OpenTradesTable
+        trades={trades ?? []}
+        onSelect={setSelectedId}
+        onOpenSnapshot={setSnapshotTradeId}
+      />
 
       {detail && (
         <div className="card">
@@ -80,6 +85,58 @@ export function TradesPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {snapshotTradeId !== null && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setSnapshotTradeId(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '95vw', maxHeight: '95vh', overflow: 'auto' }}
+          >
+            <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+              <h2>Chart trade #{snapshotTradeId}</h2>
+              <button onClick={() => setSnapshotTradeId(null)}>Đóng</button>
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              <div>
+                <div className="muted">Mở lệnh</div>
+                <img
+                  src={api.tradeSnapshotUrl(snapshotTradeId, 'open')}
+                  alt="open snapshot"
+                  style={{ maxWidth: '46vw', display: 'block' }}
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none'
+                  }}
+                />
+              </div>
+              <div>
+                <div className="muted">Đóng lệnh</div>
+                <img
+                  src={api.tradeSnapshotUrl(snapshotTradeId, 'close')}
+                  alt="close snapshot"
+                  style={{ maxWidth: '46vw', display: 'block' }}
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none'
+                  }}
+                />
+              </div>
+            </div>
           </div>
         </div>
       )}

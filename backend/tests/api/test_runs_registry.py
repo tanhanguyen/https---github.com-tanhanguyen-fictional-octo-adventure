@@ -93,7 +93,10 @@ def test_bars_no_lookahead_grows_one_candle_per_step(client: TestClient) -> None
     bars = client.get(f"/api/runs/{run_id}/bars", params={"tf": run_tf}).json()
     # exactly the processed bars are closed -- never more (C11)
     assert len(bars) == 30
-    assert list(bars[0]) == ["ts_utc", "open", "high", "low", "close"]
+    assert list(bars[0]) == ["ts_utc", "open", "high", "low", "close", "ema34", "ema89"]
+    # EMA overlay (plan 03 chart): each is either a float or None while the SMA seed warms
+    # up. With only 30 closed bars the EMA34 seed (34 bars) has not filled yet -> None.
+    assert all(b["ema34"] is None or isinstance(b["ema34"], float) for b in bars)
 
     client.post("/api/run/step")
     bars2 = client.get(f"/api/runs/{run_id}/bars", params={"tf": run_tf}).json()

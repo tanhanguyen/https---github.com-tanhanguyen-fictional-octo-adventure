@@ -31,6 +31,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 import pandas as pd
@@ -49,6 +50,7 @@ from bot.engine.announce import announce_trade_events
 from bot.engine.context import SymbolContext
 from bot.engine.runner import Runner, StepSummary
 from bot.notify import LiveAlerts
+from bot.report import snapshot as chart_snapshot
 
 logger = logging.getLogger("bot.live")
 
@@ -118,6 +120,7 @@ class LiveRunner:
         sleep_fn: Callable[[float], None] | None = None,
         grace_seconds: float = DEFAULT_GRACE_SECONDS,
         max_sleep_seconds: float = MAX_SLEEP_SECONDS,
+        snapshot_root: Path | None = None,
     ) -> None:
         if not symbols:
             raise ValueError("LiveRunner requires at least one symbol")
@@ -131,6 +134,9 @@ class LiveRunner:
         self.sleep_fn = sleep_fn if sleep_fn is not None else _real_sleep
         self.grace = timedelta(seconds=grace_seconds)
         self.max_sleep_seconds = max_sleep_seconds
+        # Plan 14: None -> bot.report.snapshot.default_snapshot_root() (backend/data/
+        # snapshots). Tests override it so they never write into the real data dir.
+        self.snapshot_root = snapshot_root
 
         self.stats = LiveStats()
         self.degraded = False
@@ -348,6 +354,10 @@ class LiveRunner:
                 if self.runner.clock.now < tick:
                     self.runner.clock.set(tick)
                 continue
+            # Plan 14: the trade a FILLED/closed event belongs to is whatever was already
+            # OPEN/PENDING going into this tick — captured before step() mutates it (a
+            # close clears `trade_db_id`, so reading it afterwards would be too late).
+            pre_trade_ids = {sym: ls.context.trade_db_id for sym, ls in self.symbols.items()}
             summaries = self.runner.step()
             if not summaries:
                 break
@@ -355,6 +365,7 @@ class LiveRunner:
             out.extend(summaries)
             self._persist_state()
             self._announce(summaries)
+            self._capture_snapshots(summaries, pre_trade_ids)
         if out:
             last = out[-1].bar_ts
             repo.update_live_status(self.conn, self.run_id, last_bar_ts_utc=last)
@@ -420,6 +431,42 @@ class LiveRunner:
 
         if summaries:
             self._check_drawdown(summaries[-1].equity)
+
+    def _capture_snapshots(
+        self, summaries: list[StepSummary], pre_trade_ids: dict[str, int | None]
+    ) -> None:
+        """Plan 14: one PNG on fill, one on close — on by default for live/paper.
+
+        A render failure must never take the loop down (the trade is already committed
+        by the time this runs): every call is wrapped and reported as `snapshot_error`
+        instead of raised."""
+        for s in summaries:
+            trade_id = pre_trade_ids.get(s.symbol)
+            if trade_id is None:
+                continue
+            ls = self.symbols[s.symbol]
+            bar_ts = datetime.fromisoformat(s.bar_ts)
+            if "FILLED" in s.trade_event_types:
+                self._safe_snapshot(ls, trade_id, "open", bar_ts, s.symbol)
+            if s.closed_result is not None:
+                self._safe_snapshot(ls, trade_id, "close", bar_ts, s.symbol)
+
+    def _safe_snapshot(
+        self, ls: LiveSymbol, trade_id: int, at: str, now: datetime, symbol: str
+    ) -> None:
+        try:
+            chart_snapshot.capture_trade_snapshot(
+                self.conn,
+                ls.context.price_feed,
+                self.run_id,
+                trade_id,
+                at,
+                now,
+                root=self.snapshot_root,
+            )
+        except Exception as exc:  # reported, never raised — see docstring above
+            logger.warning("snapshot render failed (trade %s, %s): %s", trade_id, at, exc)
+            self.alerts.snapshot_error(symbol, trade_id, at, f"{type(exc).__name__}: {exc}")
 
     def _check_drawdown(self, equity: float) -> None:
         """Alert when equity falls a configured % below its peak (plan 08 §2 thresholds:

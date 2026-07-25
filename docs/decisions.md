@@ -835,3 +835,109 @@ Hai chi tiết hành vi:
 - `tests/unit/test_dependency_direction.py`: bất biến #6.
 - Golden hash **không đổi**: `StepSummary` chỉ được **thêm** hai trường quan sát
   (`opened_trade_db_id`, `risk_multiplier`); không có nhánh quyết định nào đọc chúng.
+
+## Plan 14 — Chart snapshot: ảnh ~100 nến lúc mở/đóng lệnh (2026-07-24)
+
+### 1. Kích thước ảnh + retention: chốt theo đề xuất của plan
+
+**1200×700, dpi 100** (`bot/report/snapshot.py`, `FIGSIZE=(12,7)`, `DPI=100`) — PNG thực
+đo ra ~55–90KB/ảnh trên dữ liệu mẫu, đúng dải đề xuất. **Retention gắn theo run**: không
+có job xoá theo ngày; `RunnerService.delete_run` chưa đụng tới `data/snapshots/{run_id}/`
+(việc dọn thư mục khi xoá run để lại cho lần chạm tới `delete_run`, chưa phải yêu cầu của
+plan này — chưa có test canh cho phần đó).
+
+### 2. Không thêm cột DB cho open/close — TRỪ MỘT: `trade.range_high`/`range_low`
+
+Đường dẫn ảnh đúng như plan tả (theo quy ước `{run_id}/{trade_id}_{at}.png`, không cần
+cột DB). Nhưng range breakout tại thời điểm tín hiệu (`Signal.range_high/range_low`) chỉ
+tồn tại **trong bộ nhớ** lúc quyết định — `breakout_state` trong DB bị ghi đè mỗi tick nên
+không dùng lại được sau khi lệnh đã mở. Thêm 2 cột nullable vào `trade` (migration
+`006_snapshot.sql`), set ở `Runner.step()` lúc `insert_trade` (NULL cho mean reversion).
+Đây là lựa chọn rẻ hơn nhiều so với tái dựng lịch sử `breakout_state` cho một lần vẽ ảnh.
+
+### 3. Vị trí trong cây package: `bot/report/`, không phải `bot/engine/`
+
+Đúng bất biến #6 của plan (matplotlib/mplfinance **không** được lọt vào
+indicators/filters/strategies hay vòng lặp quyết định của engine — `runner.py`,
+`main_loop.py`, `order_engine.py`, `context.py`, `decision_log.py`, ...).
+`bot.engine.live_runner` là **ngoại lệ duy nhất** trong `bot/engine/`: nó là "tầng runner"
+plan gọi tên tường minh ("tầng runner gọi sau sự kiện fill/close"), và nó chỉ *quan sát*
+kết quả `Runner.step()` đã commit — không quyết định gì. `tests/unit/
+test_no_matplotlib_in_engine.py` canh việc này bằng AST (không phải grep chuỗi), loại trừ
+đúng một file (`live_runner.py`) khỏi danh sách cấm.
+
+### 4. Xác định trade nào vừa fill/close: bắt `trade_db_id` TRƯỚC khi gọi `runner.step()`
+
+`Runner.step()` xoá `SymbolContext.trade_db_id` ngay khi lệnh đóng, nên đọc nó SAU step()
+là quá trễ. `LiveRunner.drain()` chụp `pre_trade_ids = {symbol: trade_db_id}` ngay trước
+mỗi lần gọi `step()`; `_capture_snapshots` dùng map đó để biết event FILLED/closed thuộc
+trade nào — kể cả trường hợp một lệnh fill VÀ đóng trong cùng một tick (cùng id cho cả
+hai ảnh).
+
+### 5. Marker "signal bar": suy từ bảng `decision`, không thêm cột mới
+
+Quyết định tạo lệnh (`reason='done', stage='place_order'`) là dòng `decision` duy nhất có
+`trade_id` khớp và `bar_ts_utc` chính là nến tín hiệu — `repo.signal_decision_for_trade`
+lấy dòng đó thay vì lưu thêm timestamp. Marker "BE" tách riêng khỏi SL bị bỏ (YAGNI): cột
+`sl_price` tại thời điểm đóng lệnh đã tự nhiên phản ánh breakeven nếu TP1 đã chạm (Runner
+chỉ ghi `sl_price` lúc fill và lúc đóng, không ghi mỗi bar) — vẽ một đường SL là đủ, không
+cần phân biệt "SL gốc" và "SL đã dời BE" trên cùng một ảnh tĩnh.
+
+### 6. API: một endpoint, không tách static mount + on-demand riêng
+
+Plan gợi ý static mount (`GET /api/snapshots/{run_id}/{filename}`) cho ảnh có sẵn, cộng
+endpoint on-demand riêng cho backtest. Gộp thành **một** `GET /api/trades/{id}/snapshot?
+at=open|close`. Frontend không cần biết ảnh có sẵn hay vừa render.
+
+**Sửa bug (2026-07-24): KHÔNG serve file trên đĩa cho run backtest.** Bản đầu serve thẳng
+`snapshots/{run_id}/{trade_id}_{at}.png` nếu tồn tại. Nhưng `run_id`/`trade_id` chỉ duy
+nhất *trong một vòng đời DB*: khi `runtime.db` bị tạo lại (rất hay gặp lúc dev) hoặc số id
+trùng với run cũ của symbol khác, file cũ còn sót lại bị serve cho lệnh mới — biểu hiện là
+"chart EURUSD mà hiện giá/nến BTCUSDT". Vì render backtest **xác định** (cùng dataset + config
+version → đúng frame engine đã thấy), nay `render_trade_snapshot()` luôn render lại mỗi lần,
+không bao giờ tin file cache. Chỉ run **live/paper** mới serve file eager (dataset là stream
+sàn, không có nến lưu để render lại) — quyết định live-vs-backtest gói gọn trong
+`render_trade_snapshot()`, endpoint chỉ gọi service. Regression:
+`test_on_demand_snapshot_ignores_a_stale_file_on_disk` cắm sẵn file rác rồi khẳng định
+response là PNG mới (magic bytes), không phải bytes rác.
+
+### 7. Backtest/replay: mặc định KHÔNG chụp eager — giữ nguyên như plan, không thêm flag
+
+Cờ "bật eager cho backtest" trong plan đánh dấu ❓ tuỳ chọn — không có yêu cầu cụ thể nên
+không thêm (YAGNI); on-demand render tái tạo đúng frame xác định (cùng dataset, cùng
+config version) nên không mất gì so với chụp eager.
+
+### 8. Kiểm chứng
+
+- `tests/unit/test_snapshot.py`: `render_snapshot` từ frame cố định (seed) ra PNG tồn tại,
+  size > 0; số bar vẽ bị cắt đúng `max_bars`; level nằm trong dải giá hợp lý; frame rỗng
+  → `ValueError`. `capture_trade_snapshot` dựng đúng ảnh từ một `trade` giả trong DB
+  in-memory; trade không tồn tại → `ValueError`.
+- `tests/unit/test_live_runner_snapshot.py`: một run live/paper đầy đủ qua `LiveRunner`
+  sinh đủ `{trade_id}_open.png` + `{trade_id}_close.png` cho mọi lệnh CLOSED; renderer bị
+  monkeypatch ném exception → run vẫn xử lý hết lệnh, alert `snapshot_error` xuất hiện
+  trong `LogNotifier.sent` (không throw ra khỏi `drain()`).
+- `tests/api/test_trade_snapshot.py`: on-demand render ra `image/png` cho một trade
+  backtest CLOSED thật (open lẫn close); gọi lần hai vẫn ra PNG hợp lệ (render lại, không
+  stale); file rác trên đĩa bị bỏ qua (regression bug symbol sai); trade không tồn tại →
+  404; `at` sai giá trị → 422.
+- `tests/unit/test_no_matplotlib_in_engine.py`: AST-walk `indicators/filters/strategies`
+  + `engine` (trừ `live_runner.py`) không import `matplotlib`/`mplfinance`.
+- `mypy --strict` + `ruff` xanh trên `bot/report/` (thêm override `mplfinance.*` vào
+  `[[tool.mypy.overrides]]` vì thư viện không có type stub).
+
+## Plan 03 (bổ sung) — Overlay EMA34/89 lên chart nến Dashboard (2026-07-24)
+
+Chart nến `lightweight-charts` trước chỉ vẽ OHLC + markers, không có tín hiệu chỉ báo.
+Thêm 2 đường EMA34 (xanh) / EMA89 (cam) — cùng bảng màu với ảnh snapshot plan 14.
+
+- **Tính server-side, trên toàn bộ lịch sử đã đóng**, không tính client-side trên cửa sổ
+  trả về. EMA đệ quy: giá trị ở nến t phụ thuộc chuỗi từ đầu (seed bằng SMA `period` nến
+  đầu). Nếu frontend chỉ nhận ~1000 nến rồi tự tính, EMA ở mép trái sẽ sai. Nên `run_bars`
+  tính `ema()` (chính hàm engine dùng) trên `closed` = mọi nến đã đóng tới clock hiện tại
+  (đúng C11 no-lookahead), rồi mới cắt theo `from/to/limit`; trả thêm cột `ema34`/`ema89`
+  (nullable — nến còn trong warmup SMA trả `null`, frontend bỏ qua khi vẽ).
+- **Causal ⇒ no-lookahead giữ nguyên**: EMA chỉ nhìn quá khứ nên step thêm 1 nến không đổi
+  giá trị các nến cũ — `test_bars_no_lookahead_grows_one_candle_per_step` vẫn khẳng định
+  `bars2[:N] == bars` sau khi thêm cột EMA.
+- `BarOut` thêm `ema34`/`ema89: float | None`; `CandleChart.tsx` vẽ 2 `LineSeries`.

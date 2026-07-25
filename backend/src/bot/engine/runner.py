@@ -275,6 +275,15 @@ class Runner:
                         # Plan 07: snapshot the timeframe at open time so the hold
                         # rules stay auditable if the config changes later.
                         timeframe=sc.effective_config.timeframe,
+                        # Plan 14: the breakout range at signal time, for the chart
+                        # snapshot (None for mean reversion — Signal only carries it for
+                        # breakout).
+                        range_high=(
+                            ml.bundle.signal.range_high if ml.bundle.signal is not None else None
+                        ),
+                        range_low=(
+                            ml.bundle.signal.range_low if ml.bundle.signal is not None else None
+                        ),
                     ),
                 )
                 t.local_id = new_trade_db_id
