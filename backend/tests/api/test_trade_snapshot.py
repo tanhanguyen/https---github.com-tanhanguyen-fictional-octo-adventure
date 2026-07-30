@@ -6,6 +6,17 @@ from fastapi.testclient import TestClient
 
 
 def _run_until_trades(client: TestClient, seed: int, bars: int) -> list[dict]:
+    # BRB's Peak1 -> retest -> breakout-2 -> scoring gate (docs/spec_v2.md) cuts entry
+    # frequency by design; fall back to v1.2 single-phase entries so this fixed
+    # seed/bar-count window reliably produces a CLOSED trade -- these tests are about
+    # snapshot rendering, not the strategy (BRB itself is covered by test_strategies.py /
+    # test_main_loop.py).
+    assert (
+        client.patch(
+            "/api/config", json={"strategies": {"breakout": {"require_second_breakout": False}}}
+        ).status_code
+        == 200
+    )
     resp = client.post("/api/run", json={"seed": seed, "bars": bars})
     assert resp.status_code == 200
     for _ in range(bars + 10):

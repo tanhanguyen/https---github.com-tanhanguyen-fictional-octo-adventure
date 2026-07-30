@@ -9,6 +9,7 @@ entry, see docs/decisions.md).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 from bot.config.models import BotConfig
@@ -18,7 +19,7 @@ from bot.engine.decision_log import DecisionBundle, resolve_decision
 from bot.engine.order_engine import OpenTrade
 from bot.filters.base import FilterContext
 from bot.filters.registry import PHASE_A, PHASE_B
-from bot.strategies import breakout_retest, mean_reversion
+from bot.strategies import breakout_retest, mean_reversion, scoring
 from bot.strategies.base import BreakoutState
 
 
@@ -112,6 +113,37 @@ def decide(
 
     outcome = resolve_decision(all_results, signal, strategy_candidate, regime_undecided)
 
+    # BRB scoring gate (docs/spec_v2.md §5): a breakout-2 signal must clear
+    # `scoring_threshold_ratio` of the confirmation matrix. `signal.peak1 is not None`
+    # scopes this to the BRB path -- v1.2 fallback signals (require_second_breakout=false)
+    # carry no peak1/retest_bars_ago and are unaffected. Not "done" -> the veto-preserving
+    # block below keeps the pending breakout-2 alive within its remaining budget instead of
+    # burning the state machine (plan: "không đốt state").
+    if (
+        outcome.reason == "done"
+        and signal is not None
+        and signal.strategy == StrategyName.BREAKOUT
+        and signal.peak1 is not None
+        and config.strategies.breakout.scoring_enabled
+    ):
+        bcfg = config.strategies.breakout
+        score = scoring.compute_score(ctx, signal)
+        verdict = scoring.gate(
+            score,
+            primary_ratio=bcfg.scoring_threshold_ratio,
+            secondary_ratio=bcfg.scoring_secondary_threshold_ratio,
+        )
+        if not verdict.passed:
+            outcome = DecisionOutcome(
+                reason="wait",
+                stage="scoring_below_threshold",
+                detail=(
+                    f"score {score.total}/{score.max_available} ({score.ratio:.2f}) "
+                    f"< threshold {bcfg.scoring_threshold_ratio:.2f}; core "
+                    f"A1+B1+C1 {score.core_total}/{scoring.CORE_REQUIRED_POINTS}"
+                ),
+            )
+
     # ALLOW_SHORT (deviation #12, D11): STOCK_VN_CASH has no short side. The signal is
     # still generated and logged -- only the order is blocked. §8 vocabulary is kept
     # (invariant #4): `no_signal` because on this market a SELL signal is, tradeably
@@ -128,16 +160,20 @@ def decide(
             detail="SELL blocked: cash market",
         )
 
-    # A retest that fired but was vetoed downstream (wick/mtf/session/account_risk...)
-    # must not burn the pending breakout: keep waiting for a better retest bar within
-    # the same RETEST_MAX_BARS budget instead of silently resetting the state machine.
-    if (
-        breakout_signal is not None
-        and outcome.reason != "done"
-        and breakout_state.status == "AWAITING_RETEST"
-        and breakout_state.bars_waited + 1 <= config.risk.retest_max_bars
-    ):
-        new_breakout_state = replace(breakout_state, bars_waited=breakout_state.bars_waited + 1)
+    # A signal that fired but was vetoed downstream (wick/mtf/session/account_risk/
+    # scoring...) must not burn the pending setup: keep waiting for a better bar within
+    # the same-phase budget instead of silently resetting the state machine. v1.2
+    # fallback fires from AWAITING_RETEST (budget = risk.retest_max_bars); BRB fires from
+    # AWAITING_BREAKOUT2 (budget = breakout.breakout2_max_bars).
+    if breakout_signal is not None and outcome.reason != "done":
+        if breakout_state.status == "AWAITING_RETEST":
+            veto_budget = config.risk.retest_max_bars
+        elif breakout_state.status == "AWAITING_BREAKOUT2":
+            veto_budget = config.strategies.breakout.breakout2_max_bars
+        else:
+            veto_budget = None
+        if veto_budget is not None and breakout_state.bars_waited + 1 <= veto_budget:
+            new_breakout_state = replace(breakout_state, bars_waited=breakout_state.bars_waited + 1)
 
     open_trade: OpenTrade | None = None
     if outcome.reason == "done":
@@ -146,16 +182,69 @@ def decide(
         if signal.strategy == StrategyName.BREAKOUT:
             assert signal.range_high is not None and signal.range_low is not None
             atr14 = float(ctx.atr14.iloc[-1])
+            bcfg = config.strategies.breakout
+            # BRB (signal.retest_low/high set): SL anchors at the SAVED retest candle, not
+            # the current (breakout-2) bar. v1.2 fallback: entry IS the retest bar, so
+            # ctx.high/low.iloc[-1] is the retest candle itself (unchanged behavior).
+            retest_high = signal.retest_high if signal.retest_high is not None else float(
+                ctx.high.iloc[-1]
+            )
+            retest_low = signal.retest_low if signal.retest_low is not None else float(
+                ctx.low.iloc[-1]
+            )
             sl = breakout_retest.compute_sl(
                 signal.direction,
                 signal.range_high,
                 signal.range_low,
-                retest_high=float(ctx.high.iloc[-1]),
-                retest_low=float(ctx.low.iloc[-1]),
+                retest_high=retest_high,
+                retest_low=retest_low,
                 atr14=atr14,
                 sl_scale=sl_scale,
+                sl_buffer_atr_mult=bcfg.sl_buffer_atr_mult if signal.peak1 is not None else 0.5,
             )
-            tp_rules = breakout_retest.compute_tp_rules(config.strategies.breakout)
+            tp_rules = breakout_retest.compute_tp_rules(bcfg)
+
+            # Guard chong-1-nen (docs/spec_v2.md §4): reject setups whose 1R is too small
+            # (a normal-volatility bar would sweep the whole stop) or too large (risk cap).
+            # Scoped to BRB only (signal.peak1 is not None) -- v1.2 fallback keeps its
+            # original unguarded behavior for A/B comparison.
+            if signal.peak1 is not None and not math.isnan(atr14):
+                entry_est = float(ctx.close.iloc[-1])
+                risk_distance = abs(entry_est - sl)
+                if risk_distance < bcfg.min_stop_atr_mult * atr14:
+                    bundle = DecisionBundle(
+                        outcome=DecisionOutcome(
+                            reason="wait",
+                            stage="min_stop_distance",
+                            detail=(
+                                f"1R {risk_distance:.6f} < "
+                                f"{bcfg.min_stop_atr_mult}xATR14 {atr14:.6f}"
+                            ),
+                        ),
+                        filter_results=all_results,
+                        signal=signal,
+                        strategy=used_strategy,
+                    )
+                    return MainLoopResult(
+                        bundle=bundle, open_trade_candidate=None, breakout_state=new_breakout_state
+                    )
+                if risk_distance > bcfg.max_sl_atr_mult * atr14:
+                    bundle = DecisionBundle(
+                        outcome=DecisionOutcome(
+                            reason="wait",
+                            stage="sl_too_wide",
+                            detail=(
+                                f"1R {risk_distance:.6f} > "
+                                f"{bcfg.max_sl_atr_mult}xATR14 {atr14:.6f}"
+                            ),
+                        ),
+                        filter_results=all_results,
+                        signal=signal,
+                        strategy=used_strategy,
+                    )
+                    return MainLoopResult(
+                        bundle=bundle, open_trade_candidate=None, breakout_state=new_breakout_state
+                    )
         else:
             ema34_low = float(ctx.ema_fast_low.iloc[-1])
             ema34_high = float(ctx.ema_fast_high.iloc[-1])

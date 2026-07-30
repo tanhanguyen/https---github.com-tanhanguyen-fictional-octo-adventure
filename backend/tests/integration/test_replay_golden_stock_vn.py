@@ -61,6 +61,15 @@ def _run_vn(symbol: str, symbol_type: str, csv_path: Path, tag: str):
             "symbols": [{"symbol": symbol, "symbol_type": symbol_type}],
         }
     )
+    # This suite asserts market-rule mechanics (T+2.5, VN30F expiry, cash no-short,
+    # whole lots) end-to-end on a 600-bar D1 fixture -- not the entry strategy itself.
+    # BRB's Peak1 -> retest -> breakout-2 -> scoring gate (docs/spec_v2.md) cuts entry
+    # frequency by design, and on this fixed window/fixture can leave these mechanics
+    # untriggered (assertions are guarded with "would be vacuous" messages precisely to
+    # catch that). Fall back to v1.2 single-phase entries so the fixture reliably
+    # produces the trades these tests need; BRB itself is covered by
+    # test_strategies.py / test_main_loop.py.
+    config.strategies.breakout.require_second_breakout = False
     eff_cfg = effective_config_for_symbol(config, config.symbols[0])
     assert eff_cfg.timeframe == "1D"
 

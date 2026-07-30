@@ -22,6 +22,22 @@
    `confirmation_lag`, `retest_tolerance` (hệ số ATR, D5), `sl_scale`, các toggle filter
    (bật/tắt từng cái — nối tiếp A/B harness của plan 01). Ngưỡng regime (ADX 30/25, ER 0.6/0.3)
    là số của spec — quét chúng tức là rời spec, cần user gật riêng.
+
+   **Cập nhật 2026-07-26 (sau BRB v2, plan 15) — đây giờ là trục ƯU TIÊN của plan này.**
+   BRB để lại một việc calibration cụ thể mà `docs/decisions.md` cố ý không làm trong plan
+   15 ("cần dữ liệu thật, ngoài phạm vi triển khai đúng kế hoạch"). Trục quét, theo đúng thứ
+   tự nới đã ghi trong decisions.md:
+   `strategies.breakout.scoring_threshold_ratio` (0.50 / 0.55 / 0.60 / 0.66) →
+   `peak_min_atr_mult` (0.7 / 1.0 / 1.3) → `retest_max_depth_atr_mult` (0.5 / 1.0 / 1.5) →
+   `max_sl_atr_mult` (2.5 / 3.0 / 3.5). Cả 4 **đã configurable**, không cần thêm field —
+   đúng ràng buộc "sweep chỉ quét tham số đã tồn tại" ở trên.
+   Hai lưu ý bắt buộc khi chạy:
+   (a) **Không sweep trên dữ liệu synthetic.** Đã đo trên `--seed 42 --bars 5000`: A1 (thân
+   nến > 2×SMA10) đạt 3/23 candidate và B2 (engulfing) đạt 0/23, nên trần điểm thực tế chỉ
+   6/10 và mọi ngưỡng ≥0.66 cho 0 lệnh — random-walk không sinh xung lực thật, sweep ở đó
+   chỉ đo đặc tính của bộ sinh số ngẫu nhiên.
+   (b) **Số trade tối thiểu N của ❓2 là ràng buộc sống-chết ở đây**, không phải điều kiện
+   phụ: vùng tham số BRB có cả một mảng cho 0–3 lệnh/5000 bar, mà PF của 2 lệnh thì vô nghĩa.
 2. ❓ Metric chọn tham số trên IS — đề xuất: **profit factor** với ràng buộc
    `max_drawdown ≤ X%` và số trade tối thiểu N (metric đơn lẻ dễ bị gãy; PF + ràng buộc
    là thoả hiệp đơn giản). X, N user chốt.

@@ -50,12 +50,24 @@ def base_bars(n: int = 900, seed: int = 42) -> pd.DataFrame:
 
 def crypto_config() -> BotConfig:
     cfg = load_default_config()
+    # BRB's Peak1 -> retest -> breakout-2 -> scoring gate (docs/spec_v2.md) cuts entry
+    # frequency by design; this fixed synthetic seed/window is tuned for v1.2's single-
+    # phase entries so these live-runner plumbing tests reliably see a trade. BRB itself
+    # is covered by test_strategies.py / test_main_loop.py.
+    strategies = cfg.strategies.model_copy(
+        update={
+            "breakout": cfg.strategies.breakout.model_copy(
+                update={"require_second_breakout": False}
+            )
+        }
+    )
     return cfg.model_copy(
         update={
             "symbol": SYMBOL,
             "symbol_type": "CRYPTO",
             "timeframe": TF,
             "symbols": [SymbolEntry(symbol=SYMBOL, symbol_type="CRYPTO")],
+            "strategies": strategies,
         }
     )
 

@@ -30,7 +30,8 @@ from bot.strategies.base import BreakoutState
 
 #: Bumped whenever the payload shape changes; an unknown version is treated as "no
 #: state" rather than being guessed at (fail-closed: the runner refuses to resume).
-STATE_VERSION = 1
+#: v2 (BRB, docs/spec_v2.md): breakout_state gained peak1/retest_low/retest_high.
+STATE_VERSION = 2
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -57,6 +58,9 @@ def breakout_state_to_dict(state: BreakoutState) -> dict[str, Any]:
         "range_low": state.range_low,
         "breakout_bar_ts": _dt(state.breakout_bar_ts),
         "bars_waited": state.bars_waited,
+        "peak1": state.peak1,
+        "retest_low": state.retest_low,
+        "retest_high": state.retest_high,
     }
 
 
@@ -68,6 +72,9 @@ def breakout_state_from_dict(data: dict[str, Any]) -> BreakoutState:
         range_low=data["range_low"],
         breakout_bar_ts=_parse_dt(data["breakout_bar_ts"]),
         bars_waited=data["bars_waited"],
+        peak1=data.get("peak1"),
+        retest_low=data.get("retest_low"),
+        retest_high=data.get("retest_high"),
     )
 
 

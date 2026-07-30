@@ -20,10 +20,23 @@ risk:
 strategies:
   breakout:
     enabled: true
-    range_period: 20
+    range_period: 30                          # spec_v2 §3 (M15/H1); HTF wants 12-15 via profile
     tp1_r: 1.5
     tp2_r: 3.0
     partial_fraction: 0.5
+    require_second_breakout: true            # BRB (docs/spec_v2.md); false = v1.2 fallback
+    peak_max_bars: 10
+    peak_min_atr_mult: 1.0
+    retest_confirm_max_bars: 15
+    retest_max_depth_atr_mult: 1.0            # spec_v2 §2 buoc 3: thung sau -> huy setup
+    breakout2_max_bars: 10
+    require_retest_confirmation: true
+    sl_buffer_atr_mult: 0.3
+    min_stop_atr_mult: 1.0                   # guard chong-1-nen: reject if 1R too small
+    max_sl_atr_mult: 3.0                     # guard: reject if 1R too large
+    scoring_enabled: true
+    scoring_threshold_ratio: 0.66            # ~ 8/12
+    scoring_secondary_threshold_ratio: 0.5   # ~ 6/12: pass only if A1+B1+C1 == 5 (spec_v2 §5)
   mean_reversion:
     enabled: true
     rsi_period: 14
@@ -103,7 +116,7 @@ filters:
     after_tp1: false                        # C5
   range_width:
     enabled: true
-    atr_mult: 1.5
+    atr_mult: 2.5                             # spec_v2 §3 (was 1.5 from D3, v1.2 had no number)
   account_risk:
     enabled: true
     max_concurrent_trades: 3

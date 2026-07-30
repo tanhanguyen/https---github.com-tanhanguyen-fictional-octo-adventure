@@ -37,6 +37,11 @@ def _vn_common() -> dict[str, Any]:
         "timeframe": "1D",
         "trading_day_rollover_tz": VN_ROLLOVER_TZ,
         "trading_day_rollover_time": VN_ROLLOVER_TIME,
+        # spec_v2 §3 sizes the range window by timeframe: 30 bars on M15/H1, 12-15 on H4.
+        # D1 is not in that table; taking the higher-timeframe row's upper bound (15 ≈ 3
+        # trading weeks) is an inference, flagged in docs/decisions.md. Without it the VN
+        # D1 profile would inherit the M15/H1 default of 30 bars ≈ 6 weeks of range.
+        "strategies": {"breakout": {"range_period": 15}},
         "filters": {
             # D10: 2 concurrent trades; daily-loss limit OFF (a D1 strategy can never
             # take 3 losses in one day). `daily_loss_limit_enabled=false` is still
