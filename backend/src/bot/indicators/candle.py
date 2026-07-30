@@ -38,3 +38,63 @@ def wick_ratio(open_: float, high: float, low: float, close: float, side: str) -
     else:
         wick = high - body_top
     return wick / rng
+
+
+def body_size(open_: float, close: float) -> float:
+    return abs(close - open_)
+
+
+def rejection_wick(open_: float, high: float, low: float, close: float, side: str) -> float:
+    """Absolute size (not ratio) of the wick opposite `side` -- BUY: lower wick,
+    SELL: upper wick. Used by pin-bar/long-wick checks that compare against body size."""
+    body_top = max(open_, close)
+    body_bottom = min(open_, close)
+    return body_bottom - low if side == "BUY" else high - body_top
+
+
+def is_pin_bar(
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    side: str,
+    wick_body_mult: float = 2.0,
+    body_max_position: float | None = None,
+) -> bool:
+    """BRB retest confirmation / scoring B1 (spec_v2 §5): rejection wick opposite `side`
+    is at least `wick_body_mult` times the candle body (a zero body with any wick counts
+    as a pin).
+
+    `body_max_position` adds spec B1's "thân gần mép": the body must sit within that
+    fraction of the range measured from the edge the wick rejects away from (BUY: the
+    top; SELL: the bottom). Left None, only the wick/body ratio is tested -- which is
+    what makes B3 ("bóng dài", 1.5x) a strictly weaker criterion than B1 rather than a
+    duplicate of it."""
+    body = body_size(open_, close)
+    wick = rejection_wick(open_, high, low, close, side)
+    if body <= 0:
+        wick_ok = wick > 0
+    else:
+        wick_ok = wick > wick_body_mult * body
+    if not wick_ok:
+        return False
+    if body_max_position is None:
+        return True
+    rng = high - low
+    if rng <= 0:
+        return False
+    if side == "BUY":
+        return (high - min(open_, close)) / rng <= body_max_position
+    return (max(open_, close) - low) / rng <= body_max_position
+
+
+def is_engulfing(
+    prev_open: float, prev_close: float, open_: float, close: float, side: str
+) -> bool:
+    """BRB retest confirmation / scoring B2: this candle's body engulfs the previous
+    candle's body, in the direction that rejects `side`'s broken level."""
+    prev_top = max(prev_open, prev_close)
+    prev_bottom = min(prev_open, prev_close)
+    if side == "BUY":
+        return close > open_ and open_ <= prev_bottom and close >= prev_top
+    return close < open_ and open_ >= prev_top and close <= prev_bottom

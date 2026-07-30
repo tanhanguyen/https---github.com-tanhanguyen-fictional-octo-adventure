@@ -5,8 +5,10 @@ Trạng thái hiện tại (đã xong, commit `1825b99`): Phases 1–5 của pla
 fill-at-next-open, runner), mock synthetic feed, SQLite (counters DERIVED, config versioned),
 FastAPI REST, React dashboard 4 trang. Toàn bộ chạy trên **dữ liệu mock, 1 symbol (EURUSD), paper**.
 
-Nguồn chân lý: `docs/spec_v1_2.md`. Mọi quyết định & sai lệch: `docs/decisions.md` (D1–D11,
-C1–C12, 14 deviations). **Ràng buộc xuyên suốt: không tự thêm chiến lược/bộ lọc ngoài spec.**
+Nguồn chân lý: `docs/spec_v1_2.md` **cho mọi thứ trừ chiến lược breakout**; từ 2026-07-26
+chiến lược breakout theo `docs/spec_v2.md` (BRB — Breakout → Retest → Breakout + ma trận
+điểm số), xem hàng 15 bảng dưới. Mọi quyết định & sai lệch: `docs/decisions.md` (D1–D11,
+C1–C12, 21 deviations). **Ràng buộc xuyên suốt: không tự thêm chiến lược/bộ lọc ngoài spec.**
 
 ## Các plan (mỗi file giao cho Sonnet thực hiện độc lập)
 
@@ -26,6 +28,7 @@ C1–C12, 14 deviations). **Ràng buộc xuyên suốt: không tự thêm chiế
 | 12 | [12-execution-realism.md](12-execution-realism.md) | (Nâng cao) Funding fee, margin guard, websocket, hiệu chỉnh slippage, **12e: độ thật chứng khoán VN** — 5 mục độc lập | 02/07/08 tuỳ mục (12e sau 05) |
 | 13 | [13-alerts.md](13-alerts.md) | Alert center: Telegram + toast web UI + bảng alert DB, một event bus chung | 03 (Telegram dùng chung 07) |
 | 14 | [14-chart-snapshot.md](14-chart-snapshot.md) | Ảnh chart ~100 nến + indicator + entry/SL/TP lúc mở/đóng lệnh để audit | 03; chụp tự động cần 07 |
+| 15 | [docs/spec_v2.md](../docs/spec_v2.md) | **BRB**: breakout→retest→breakout (vào lệnh sau khi phá Peak1), ma trận điểm số 12 tiêu chí, guard khoảng cách SL. Không có file plan riêng — spec là plan; ghi chép triển khai ở `docs/decisions.md` mục "BRB v2" | 03 (đo được), 05 (profile VN) |
 
 Thứ tự đề xuất: **01 → 02 → 03 → 04 → 06 → 05 → 07 → 09 → (08 nếu muốn)**.
 04 và 06 độc lập nhau, làm song song được. 09 chen vào bất cứ lúc nào sau 03.
@@ -89,6 +92,26 @@ symbol VN với FOREX/CRYPTO trong một run; (d) không đủ 1 lô nguyên →
 (e) chuỗi VN30F liên tục bằng **script `stitch_vn30f.py`** ngoài engine; (f) chấp nhận cả 4
 đơn giản hoá (tick HOSE, trần/sàn ±7%, đáo hạn thuần lịch, không margin) — **gom thành plan
 nâng cao 12e**. Chi tiết + lý do: `docs/decisions.md` mục "Plan 05".
+
+Quyết định user (2026-07-26, BRB v2 — plan 15): chiến lược breakout chuyển sang
+**Breakout → Retest → Breakout**: vào lệnh sau khi phá `Peak1` (đỉnh xung lực ≥1×ATR trên
+range) thay vì ngay tại nến retest — sửa gốc lỗi "SL bị quét trong 1 nến" (entry cũ ≈
+`range_high` ⇒ 1R ≈ 0.5×ATR). User chốt làm **cả hai**: BRB đầy đủ **và** guard khoảng cách SL
+trực tiếp (`min_stop_atr_mult`/`max_sl_atr_mult`). `require_second_breakout=false` giữ nguyên
+máy trạng thái v1.2 để A/B. Chi tiết + 5 điểm giải mâu thuẫn spec_v2 vs bất biến engine (D6
+khớp-ở-open, deviation #7 TP-chốt-lúc-fill, D5 retest-theo-ATR, TP2 = R cố định thay vì
+trailing fractal): `docs/decisions.md` mục "BRB v2".
+
+**Cảnh báo cho mọi plan sau**: BRB đổi ý nghĩa của "nến quyết định". Ở v1.2 nến quyết định
+*là* nến retest; ở BRB nó là nến **breakout-2**, còn nến retest nằm `signal.retest_bars_ago`
+bar trước đó. Bất kỳ filter/report/snapshot nào cần soi "nến retest" **phải** dùng offset đó,
+không dùng `iloc[-1]` — đây chính là lỗi đã làm filter `wick` chặn sạch tín hiệu BRB
+(`docs/decisions.md` mục "Sửa 4 lỗi ghép nối của BRB").
+
+**Calibration là việc còn mở, không thuộc plan 15.** BRB + scoring siết phễu rất mạnh; trên
+dữ liệu synthetic (random-walk) tần suất lệnh gần 0 vì hai tiêu chí A1 (thân nến > 2×SMA10)
+và B2 (engulfing) hầu như không xảy ra. Hiệu chỉnh ngưỡng cần **dữ liệu thật** — đã đưa vào
+plan 11 (❓1) làm trục sweep, không phải sửa code.
 
 ## Bất biến (in vào đầu mọi plan — Sonnet, Opus phải giữ)
 

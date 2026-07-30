@@ -201,3 +201,79 @@ def test_full_main_loop_account_risk_blocks_when_trade_open(base_ctx):
     result = main_loop.decide(ctx, BreakoutState.initial(), ctx.config)
     assert result.bundle.outcome.reason == "max_concurrent_trades_reached"
     assert result.bundle.outcome.stage == "one_trade_per_symbol"
+
+
+def _brb_pending_state(range_high: float, retest_low: float, peak1: float = 105.90):
+    from bot.strategies.base import BreakoutState
+
+    return BreakoutState(
+        status="AWAITING_BREAKOUT2",
+        direction=Direction.BUY,
+        range_high=range_high,
+        range_low=104.0,
+        breakout_bar_ts=None,
+        bars_waited=3,
+        peak1=peak1,
+        retest_low=retest_low,
+        retest_high=retest_low + 0.1,
+    )
+
+
+def test_brb_min_stop_distance_guard_blocks_a_too_tight_setup(base_ctx):
+    """docs/spec_v2.md §4 guard chong-1-nen: 1R < min_stop_atr_mult x ATR14 -> wait."""
+    cfg = base_ctx.config.model_copy(deep=True)
+    cfg.strategies.breakout.scoring_enabled = False  # isolate the guard from scoring
+    ctx = replace(base_ctx, config=cfg)
+    state = _brb_pending_state(range_high=105.9, retest_low=105.9)  # SL ends up ~0.23 from close
+
+    result = main_loop.decide(ctx, state, cfg)
+    assert result.bundle.outcome.reason == "wait"
+    assert result.bundle.outcome.stage == "min_stop_distance"
+    assert result.open_trade_candidate is None
+
+
+def test_brb_sl_too_wide_guard_blocks_an_oversized_setup(base_ctx):
+    cfg = base_ctx.config.model_copy(deep=True)
+    cfg.strategies.breakout.scoring_enabled = False
+    ctx = replace(base_ctx, config=cfg)
+    state = _brb_pending_state(range_high=100.0, retest_low=100.0)  # SL ends up far from close
+
+    result = main_loop.decide(ctx, state, cfg)
+    assert result.bundle.outcome.reason == "wait"
+    assert result.bundle.outcome.stage == "sl_too_wide"
+    assert result.open_trade_candidate is None
+
+
+def test_brb_scoring_gate_blocks_and_does_not_burn_state(base_ctx):
+    """Plan: a breakout-2 signal below `scoring_threshold_ratio` must `wait`, not
+    `done`, and must NOT reset the state machine to NONE (bars_waited keeps counting
+    within the still-live AWAITING_BREAKOUT2 budget)."""
+    cfg = base_ctx.config.model_copy(deep=True)
+    cfg.strategies.breakout.scoring_enabled = True
+    # BOTH tiers unreachable -- otherwise spec_v2 §5's middle tier could rescue the signal
+    # and this test would silently stop testing the gate. Tier logic itself is covered by
+    # the pure `scoring.gate` tests in test_scoring.py.
+    cfg.strategies.breakout.scoring_threshold_ratio = 1.1
+    cfg.strategies.breakout.scoring_secondary_threshold_ratio = 1.1
+    ctx = replace(base_ctx, config=cfg)
+    state = _brb_pending_state(range_high=105.3, retest_low=105.3)
+
+    result = main_loop.decide(ctx, state, cfg)
+    assert result.bundle.outcome.reason == "wait"
+    assert result.bundle.outcome.stage == "scoring_below_threshold"
+    assert result.open_trade_candidate is None
+    assert result.breakout_state.status == "AWAITING_BREAKOUT2"
+    assert result.breakout_state.bars_waited == state.bars_waited + 1
+    assert result.breakout_state.peak1 == state.peak1
+
+
+def test_brb_setup_within_guard_bounds_and_scoring_disabled_reaches_done(base_ctx):
+    cfg = base_ctx.config.model_copy(deep=True)
+    cfg.strategies.breakout.scoring_enabled = False
+    ctx = replace(base_ctx, config=cfg)
+    state = _brb_pending_state(range_high=105.3, retest_low=105.3)  # 1R ~0.83, within bounds
+
+    result = main_loop.decide(ctx, state, cfg)
+    assert result.bundle.outcome.reason == "done"
+    assert result.open_trade_candidate is not None
+    assert result.open_trade_candidate.direction == Direction.BUY

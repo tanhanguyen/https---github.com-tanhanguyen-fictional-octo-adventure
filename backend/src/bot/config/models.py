@@ -24,10 +24,40 @@ class StrictModel(BaseModel):
 
 class BreakoutConfig(StrictModel):
     enabled: bool = True
-    range_period: int = 20
+    # spec_v2 §3: 30 bars on M15/H1 ("xét dài ra để tránh fake breakout, và tránh tình
+    # trạng entry và SL chung 1 nến"). Higher timeframes want 12-15 -- set per profile /
+    # per-symbol override, not here (the VN D1 profile does exactly that).
+    range_period: int = 30
     tp1_r: float = 1.5
     tp2_r: float = 3.0
     partial_fraction: float = 0.5
+    # BRB (docs/spec_v2.md §2/§4, plan "Nâng cấp Breakout -> BRB"). Feature flag default
+    # true: BRB is the new system. false = fall back to v1.2 breakout-retest-entry-at-retest
+    # behavior (A/B comparable).
+    require_second_breakout: bool = True
+    peak_max_bars: int = 10
+    peak_min_atr_mult: float = 1.0
+    retest_confirm_max_bars: int = 15
+    # spec_v2 §2 step 3 "retest thủng sâu -> huỷ": how far past the broken level the
+    # retest bar may dip before the setup is abandoned instead of advancing to
+    # breakout-2. Also what bounds `retest_low`/`retest_high`, hence 1R.
+    retest_max_depth_atr_mult: float = 1.0
+    breakout2_max_bars: int = 10
+    require_retest_confirmation: bool = True
+    sl_buffer_atr_mult: float = 0.3
+    # BRB's 1R has a structural floor of peak_min_atr_mult + sl_buffer_atr_mult (= 1.3x
+    # ATR by default) because entry sits above Peak1 while SL sits below the retest low.
+    # min/max must bracket that floor -- min 0.5 was dead (never reachable from below)
+    # and max 2.0 left only 0.7x ATR of headroom for peak overshoot plus retest depth,
+    # so spec-correct setups died as `sl_too_wide`.
+    min_stop_atr_mult: float = 1.0
+    max_sl_atr_mult: float = 3.0
+    scoring_enabled: bool = True
+    scoring_threshold_ratio: float = 0.66
+    # spec_v2 §5 middle tier ("6-7/12 → xem xét thêm nếu A1+B1+C1 ≥ 5"): scores in
+    # [secondary, primary) still enter, but only with all three core criteria passing.
+    # 0.5 == 6/12, the spec's lower bound of that band.
+    scoring_secondary_threshold_ratio: float = 0.5
 
 
 class MeanReversionConfig(StrictModel):
@@ -155,7 +185,9 @@ class TimeStopFilterConfig(FilterToggle):
 
 
 class RangeWidthFilterConfig(FilterToggle):
-    atr_mult: float = 1.5
+    # spec_v2 §3: `Range_High - Range_Low > 2.5 x ATR(14)` or don't trade. The old 1.5
+    # came from D3 (spec v1.2 had no number); v2 states one, so v2 wins.
+    atr_mult: float = 2.5
 
 
 class AccountRiskFilterConfig(FilterToggle):

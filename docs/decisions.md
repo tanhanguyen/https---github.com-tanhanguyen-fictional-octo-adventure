@@ -941,3 +941,258 @@ Thêm 2 đường EMA34 (xanh) / EMA89 (cam) — cùng bảng màu với ảnh s
   giá trị các nến cũ — `test_bars_no_lookahead_grows_one_candle_per_step` vẫn khẳng định
   `bars2[:N] == bars` sau khi thêm cột EMA.
 - `BarOut` thêm `ema34`/`ema89: float | None`; `CandleChart.tsx` vẽ 2 `LineSeries`.
+
+## BRB v2 — Breakout → Retest → Breakout + ma trận điểm số (2026-07-26)
+
+Nguyên nhân gốc của "SL quét trong 1 nến / win<loss": chiến lược cũ (`breakout_retest.py`)
+vào lệnh NGAY tại nến retest ⇒ entry ≈ `range_high`/`range_low`, SL neo `retest_low/high ∓
+0.5×ATR` ⇒ 1R ≈ 0.5×ATR, một nến biến động bình thường (~1×ATR) quét trọn 1R. `docs/
+spec_v2.md` (BRB) sửa gốc: chỉ vào lệnh khi giá phá **Peak1** (đỉnh xung lực ≥ 1×ATR trên
+range) ⇒ entry cách xa SL ⇒ 1R lớn hơn hẳn. Người dùng chốt (2026-07-26): làm cả hai — xây
+BRB đầy đủ **và** thêm guard khoảng cách SL trực tiếp — thay vì chọn một trong hai.
+
+### Quyết định giữ-invariant (giải mâu thuẫn spec_v2 vs engine)
+
+| spec_v2 | Engine invariant | Quyết định |
+|---|---|---|
+| Vào lệnh tại **close** nến breakout-2 | D6/C2: quyết ở close `[-1]`, khớp ở open `[+1]` | **Giữ D6** — không có lệnh chờ tại `Peak1+2pip` (engine không có stop-order) |
+| TP1 = 1.618×Sóng1 (measured move) | TP là R-multiple chốt lúc fill (deviation #7) | **Giữ R-multiple** (`tp1_r=1.5` mặc định); measured-move tuyệt đối để follow-up |
+| Retest sai số ±0.3% | D5: retest theo ATR (mult 0.25) | **Giữ ATR mode** (đã tốt hơn D5) |
+| SL cap 2.0×ATR, risk ≤2% | Chưa có cap khoảng cách SL | **Thêm** `min_stop_atr_mult`/`max_sl_atr_mult` (guard chống-1-nến trực tiếp, độc lập BRB) |
+| Trailing Fractal cho TP2 | Engine: breakeven sau TP1 + TP2 = R cố định | **Giữ TP2 = R cố định**; fractal trailing để follow-up (đụng `order_engine.process_bar`) |
+
+### Triển khai
+
+1. **Máy trạng thái 4 pha** (`strategies/breakout_retest.py`, `strategies/base.py`):
+   `NONE → AWAITING_PEAK → AWAITING_RETEST → AWAITING_BREAKOUT2 → signal`. `BreakoutState`
+   thêm `peak1`, `retest_low`, `retest_high`; `bars_waited` giờ đếm theo bar **trong pha
+   hiện tại** (reset về 0 mỗi lần chuyển pha), không còn là bộ đếm toàn cục.
+   `breakout.require_second_breakout` (mặc định **true**) chọn nhánh BRB; `false` fallback
+   nguyên máy trạng thái v1.2 (retest = entry, `Signal.peak1` = `None`) để A/B so sánh và
+   để các test không liên quan tới BRB (settlement/expiry/allow_short/live-runner
+   plumbing...) không phải tune lại tham số BRB — xem mục "Test fixtures" bên dưới.
+2. **Ma trận điểm số** (`strategies/scoring.py`, MỚI, pure) — A1/A2/A4/B1/B2/B3/C1 tính
+   trực tiếp từ series `FilterContext` tại bar breakout-2; B1/B2/B3 (pin bar/engulfing/bóng
+   dài tại nến retest) định vị lại nến retest qua `Signal.retest_bars_ago` (bar offset, MỚI
+   trên `Signal`) thay vì mang nguyên nến retest xuyên suốt state/Signal. **A3 (volume)**
+   chỉ cộng vào `max_available` khi `filters.volume.enabled` (FOREX mặc định false, VN
+   profile true) — ngưỡng là **tỉ lệ** `total/max_available ≥ scoring_threshold_ratio`
+   (mặc định 0.66 ≈ 8/12), không phải điểm tuyệt đối, để FOREX (max=10) và VN (max=12) so
+   được cùng thang. `indicators/candle.py` thêm `is_pin_bar`/`is_engulfing`/`body_size` —
+   dùng chung cho cả xác nhận retest (bước 3, `breakout_retest._retest_confirmed`) lẫn
+   scoring B1/B2/B3.
+3. **Guard khoảng cách SL** (`main_loop.decide`) — sau khi tính `sl` cho tín hiệu BREAKOUT,
+   nếu `signal.peak1 is not None` (scope: chỉ BRB, v1.2 fallback giữ hành vi cũ không
+   guard) và `1R = |close[-1] − sl]`: `< min_stop_atr_mult×ATR14` → `wait/
+   min_stop_distance`; `> max_sl_atr_mult×ATR14` → `wait/sl_too_wide`. Cạnh nhánh
+   `lot_below_min` sẵn có, cùng pattern early-return.
+4. **Gate scoring** (`main_loop.decide`) — tín hiệu BREAKOUT có `peak1` (BRB) và
+   `scoring_enabled` mà tỉ lệ điểm < ngưỡng → outcome bị ghi đè thành `wait/
+   scoring_below_threshold` TRƯỚC khi tới guard SL/lot. Nhánh "vetoed signal không đốt
+   state" đã có sẵn cho v1.2 (`AWAITING_RETEST`) được tổng quát hoá theo pha: BRB vetoed
+   tại `AWAITING_BREAKOUT2` giữ nguyên state (tăng `bars_waited`) trong ngân sách
+   `breakout2_max_bars` còn lại, thay vì bị `evaluate()` reset về `NONE`.
+5. **Persistence** (`engine/live_state.py`) — `breakout_state_to_dict/from_dict` serialize
+   thêm `peak1/retest_low/retest_high`. `STATE_VERSION` bump 1→2 (payload shape đổi): một
+   live run cũ resume sau restart sẽ gặp version không khớp → coi như "không có state"
+   (fail-closed, đã là hành vi thiết kế sẵn của module) thay vì bị hiểu sai. Bảng
+   `breakout_state` (SQL, `001_init.sql`) không có caller nào đọc/ghi (backtest giữ state
+   trong memory, `SymbolContext.breakout_state`) nên **không cần migration** — đúng gợi ý
+   của plan.
+6. **Config** (`config/models.py` + `default.yaml`) — `BreakoutConfig` thêm
+   `require_second_breakout`, `peak_max_bars=10`, `peak_min_atr_mult=1.0`,
+   `retest_confirm_max_bars=15`, `breakout2_max_bars=10`, `require_retest_confirmation`,
+   `sl_buffer_atr_mult=0.3` (BRB dùng; v1.2 fallback giữ `0.5` cũ qua default param của
+   `compute_sl`), `min_stop_atr_mult=0.5`, `max_sl_atr_mult=2.0`, `scoring_enabled`,
+   `scoring_threshold_ratio=0.66`.
+
+### Tần suất lệnh giảm — đúng chủ trương, xử lý bằng cách tách test fixture thay vì nới tham số
+
+BRB vào lệnh muộn hơn (phải đợi đủ Peak1 → retest xác nhận → breakout-2) và thêm gate
+scoring, nên **tần suất lệnh giảm rõ rệt trên các fixture cố định sẵn có** — đúng rủi ro
+plan đã lường trước ("chuẩn bị nới `scoring_threshold_ratio`/`peak_min_atr_mult` nếu đói
+lệnh"). Kiểm tra thực tế trên fixture VN 600-bar D1: 0 lệnh khớp trong khi trước đó test đã
+kỳ vọng ≥1 lệnh CLOSED; trên seed=42 mặc định của `test_replay_golden_with_costs`/
+`test_live_runner`/API alert-plumbing test: tương tự.
+
+Quyết định (thay vì tinh chỉnh tham số BRB để ép fixture ra đủ lệnh — việc đó là calibration
+ngoài phạm vi plan này): các test **không kiểm chứng bản thân chiến lược BRB** (T+2.5, đáo
+hạn VN30F, cash không short, cost model, live-runner restart/alert plumbing, on-demand
+snapshot) chuyển sang chạy với `require_second_breakout=false` (qua override config trực
+tiếp trong test, hoặc `PATCH /api/config` cho test API) — giữ nguyên fixture/seed đã có,
+khôi phục đúng tần suất lệnh cũ cho các mục đích kiểm thử đó. BRB tự nó (máy trạng thái 4
+pha, các nhánh reset theo từng pha, guard SL, ma trận điểm số, gate-không-đốt-state) được
+kiểm bằng fixture dựng tay riêng trong `tests/unit/test_strategies.py` /
+`tests/unit/test_scoring.py` / `tests/unit/test_main_loop.py`. Golden hash không bị đụng
+tới (các test đổi đều tự so hai lần chạy hoặc so sánh tương đối, không ghim hằng số).
+
+### Kiểm chứng
+
+- `tests/unit/test_strategies.py`: chu trình BRB đầy đủ (breakout→Peak1→retest xác
+  nhận→breakout-2 phát signal mang `peak1/retest_low/retest_high/retest_bars_ago`); 3
+  nhánh reset (Peak1 không đạt trong `peak_max_bars`, retest quá hạn
+  `retest_confirm_max_bars`, breakout-2 quá hạn `breakout2_max_bars`); fallback
+  `require_second_breakout=false` tái tạo đúng hành vi v1.2 (signal không mang `peak1`).
+- `tests/unit/test_scoring.py`: từng tiêu chí A1/A2/A4/B1/B2/B3/C1 pass/fail độc lập; A3
+  bị loại khỏi `max_available` khi volume filter tắt (FOREX) và được cộng khi bật (VN);
+  `ratio = total/max_available`.
+- `tests/unit/test_main_loop.py`: guard `min_stop_distance`/`sl_too_wide` (dựng
+  `AWAITING_BREAKOUT2` state tay + `base_ctx` warmed-up); gate `scoring_below_threshold`
+  giữ nguyên `AWAITING_BREAKOUT2` (không đốt state, `bars_waited` tăng đúng 1); setup hợp
+  lệ (trong guard, scoring tắt) vẫn ra `done`.
+- Toàn bộ suite hiện có (trừ `-m slow`) xanh sau khi disable BRB cho các test không liên
+  quan như trên: `tests/unit/test_stock_vn_decisions.py`,
+  `tests/integration/test_replay_golden_stock_vn.py`,
+  `tests/integration/test_replay_golden_with_costs.py`, `tests/unit/test_live_runner*.py`,
+  `tests/api/test_alerts.py`, `tests/api/test_trade_snapshot.py`.
+
+### Kết quả `replay --seed 42 --bars 5000` (verification, 2026-07-26)
+
+`python -m bot.cli replay --seed 42 --bars 5000` với BRB mặc định (`require_second_breakout
+=true`) ra **0 lệnh** trên seed 42 (`decision_stream_hash=
+8836f7a1fc829355162e0ae8cce07f5f1d8f0b756f3955870a29ba2799ffdd9b`, ổn định 2 lần chạy — bất
+biến #1 giữ nguyên). Cùng seed/cấu hình chạy `require_second_breakout=false` (v1.2) ra 21
+lệnh. Truy vết: chỉ 10/5000 bar hoàn tất trọn chu trình 4 pha tới bar breakout-2 (phần lớn
+`no_signal/breakout` là chưa arm được, không phải bị chặn) và cả 10 đều rớt
+`scoring_below_threshold`; tắt hẳn scoring (guard SL vẫn bật) chỉ nâng lên **1 lệnh**. Vậy
+điểm siết chính là chính máy trạng thái BRB (`peak_min_atr_mult=1.0`, xác nhận retest bắt
+buộc, 3 ngân sách nến nối tiếp `peak_max_bars`+`retest_confirm_max_bars`+
+`breakout2_max_bars`), không phải scoring hay guard SL.
+
+Đây đúng như rủi ro plan đã lường trước ("tần suất lệnh giảm... chuẩn bị nới
+`scoring_threshold_ratio`/`peak_min_atr_mult` nếu đói lệnh") — nhưng 0-1 lệnh/5000 bar trên
+dữ liệu synthetic (random-walk, không có xung lực thật) là mức cực đoan, không đại diện cho
+dữ liệu thị trường thật (xung lực Peak1 ≥1×ATR xảy ra tự nhiên hơn nhiều trên trend thật).
+**Không tinh chỉnh tham số trong plan này** — việc đó là calibration cần dữ liệu thật, ngoài
+phạm vi "triển khai đúng kế hoạch". Khuyến nghị bắt buộc trước khi chạy live: chạy lại
+`replay`/backtest trên dữ liệu THẬT (không phải synthetic) của từng symbol, so histogram
+`reason/stage` và số lệnh; nếu đói lệnh, nới theo đúng thứ tự plan gợi ý
+(`scoring_threshold_ratio` trước, rồi `peak_min_atr_mult`) qua Config UI — không cần sửa
+code, hai tham số này đã có trong `BreakoutConfig`/`default.yaml`.
+
+### Sửa 4 lỗi ghép nối của BRB (2026-07-26, sau khi user báo backtest 1 năm 0 lệnh)
+
+Kết luận "điểm siết chính là chính máy trạng thái BRB" ở mục trên **chưa đúng hoàn toàn**:
+truy vết đó bị hai điểm mù (filter `wick` chặn dưới nhãn `no_signal/wick` lẫn với
+`no_signal/breakout`; setup chết vì `sl_too_wide` sau khi đã đốt xong ngân sách bar). Rà lại
+toàn chuỗi tìm ra 4 lỗi thật — đều **đổi hành vi mặc định**, đã sửa:
+
+1. **Filter `wick` đọc sai nến.** `wick.py` đọc `iloc[-1]` = nến quyết định. Ở v1.2 nến đó
+   *là* nến retest nên đúng; ở BRB nó là nến **breakout-2**, nên filter đi đòi bóng từ chối
+   ≥ `min_ratio` trên đúng cái nến mà BRB (và scoring A1/A2) muốn là nến xung lực thân lớn
+   bóng nhỏ — tức là chặn hệ thống mọi tín hiệu BRB. Nay định vị nến retest qua
+   `signal.retest_bars_ago` (cùng cách scoring B1/B3 làm), `values` mang thêm
+   `retest_bars_ago` để đọc được trên UI. v1.2 fallback không đổi (`retest_bars_ago=None`
+   → offset 0 → vẫn `[-1]`).
+2. **Thiếu invalidation "retest thủng sâu"** (spec_v2 §2 bước 3). `_evaluate_brb_pending`
+   chỉ kiểm `low <= level + tolerance`, **không có biên dưới** → giá sập xuyên qua range vẫn
+   tính là "đã retest", máy trạng thái tiến sang `AWAITING_BREAKOUT2` với `retest_low` rất
+   thấp ⇒ SL neo ở đó luôn rớt `sl_too_wide`, đồng thời giam state thêm trọn
+   `breakout2_max_bars`. Nhánh v1.2 vốn có `close > level` nên miễn nhiễm; BRB đánh rơi.
+   Thêm `breakout.retest_max_depth_atr_mult` (mặc định `1.0`) — vượt độ sâu đó thì **huỷ
+   setup** thay vì tiến pha. Tham số này cũng chính là thứ chặn trên `retest_low`, tức chặn
+   trên 1R.
+3. **Scoring A4 đo sai mốc.** `depth_pct` tính từ `peak1`, nhưng nến breakout-2 **theo định
+   nghĩa** vừa mới vượt `peak1` ⇒ depth ≈ 0 ⇒ A4 gần như **không bao giờ** ghi điểm (mất
+   cứng 1 điểm trên thang 10 của FOREX). spec §5 A4 đo từ **Range**. Đã đổi sang
+   `range_high`/`range_low` theo hướng lệnh. Đo được sau khi sửa: A4 đạt 12/23 candidate
+   (trước: 0/23).
+   Kèm theo: **B1 thêm điều kiện "thân gần mép"** của spec (`is_pin_bar(body_max_position=)`,
+   mặc định `None` nên mọi caller cũ không đổi) — trước đó B1 (bóng >2×thân) là phát biểu
+   lồng của B3 (>1.5×thân), một tín hiệu tính điểm hai lần; nay B1 là tiêu chí thật sự mạnh
+   hơn. Và bỏ nhánh chết trong `_retest_confirmed` (gọi `is_pin_bar` 2.0 rồi 1.5 — cái sau
+   bao cái trước, ngưỡng thực tế luôn là 1.5).
+4. **`min_stop_atr_mult`/`max_sl_atr_mult` không bao gói được 1R của BRB.** 1R có **sàn cấu
+   trúc** = `peak_min_atr_mult + sl_buffer_atr_mult` ≈ 1.3×ATR (entry trên Peak1, SL dưới
+   đáy retest). Nên `min_stop=0.5` là guard **chết** (không bao giờ kích từ dưới), còn
+   `max_sl=2.0` chỉ để lại 0.7×ATR cho *(peak vượt hơn 1 ATR)* + *(độ sâu bóng nến retest)*
+   — mà `require_retest_confirmation=true` lại **bắt buộc** bóng dài, tức setup càng đúng
+   spec càng dễ chết. Đổi mặc định: `min_stop_atr_mult 0.5→1.0`, `max_sl_atr_mult 2.0→3.0`.
+   Đây là **sai lệch có chủ đích khỏi spec_v2 §4** ("SL cap 2.0×ATR"): cap 2.0 của spec
+   không tương thích với chính yêu cầu Peak1 ≥1×ATR của spec.
+
+**Kiểm chứng** (`--seed 42 --bars 5000`, synthetic):
+
+| | Trước | Sau |
+|---|---|---|
+| Bar tới được gate scoring | 10 | **23** |
+| `wait/sl_too_wide` + `wait/min_stop_distance` | có (giam state) | **0** |
+| Lệnh khi `scoring_enabled=false` | 1 | **3** |
+| Lệnh khi scoring ON (ratio 0.66) | 0 | 0 |
+
+Phân phối điểm của 23 candidate: `2/10 ×2, 3/10 ×7, 4/10 ×2, 5/10 ×6, 6/10 ×6` — **trần thực
+tế là 6/10 = 0.60**, nên ngưỡng `0.66` cho 0 lệnh; hạ `0.60` sẽ cho 6 candidate qua. Tỉ lệ đạt
+từng tiêu chí: `C1_rsi 23/23`, `B3_long_wick 23/23`, `A2_wick 17/23`, `A4_depth 12/23`,
+`B1_pin_bar 9/23`, **`A1_body 3/23`**, **`B2_engulfing 0/23`** — A1 (thân > 2×SMA10) và B2
+(engulfing) là hai tiêu chí gần như không đạt trên random-walk synthetic, đúng bản chất dữ
+liệu chứ không phải lỗi.
+
+**Vẫn KHÔNG tinh chỉnh `scoring_threshold_ratio` ở đây** — giữ nguyên lập luận của mục trên
+(calibration cần dữ liệu thật). Hai việc follow-up lộ ra ở đây **đã làm ở mục kế tiếp**.
+
+Determinism (bất biến #1) giữ nguyên: `--seed 42 --bars 2000` chạy 2 lần cho cùng
+`decision_stream_hash=b97c2fb0386d62aa902e36ec3899d267c1acf776500f4dac64464a2274f80a5a`.
+Stream/equity đổi so với trước là **CHỦ ĐÍCH** (4 sửa trên đều đổi hành vi); golden test chỉ
+so hai lần chạy nên không cần re-pin. Test mới: `test_wick_reads_the_retest_bar_not_the_
+breakout2_bar` (`test_filters.py`), `test_brb_resets_when_the_retest_breaks_deep_through_the_
+level` + control `test_brb_shallow_retest_dip_is_still_accepted` (`test_strategies.py`),
+`test_a4_depth_*` viết lại theo mốc Range + `test_a4_depth_uses_range_low_for_sell` +
+`test_b1_pin_bar_fails_when_body_sits_mid_range` (`test_scoring.py`).
+
+### Đưa ngưỡng scoring và tham số Range về đúng spec_v2 (2026-07-26)
+
+Hai follow-up của mục trên, làm nốt.
+
+**1. Tầng ngưỡng giữa của §5** (`strategies/scoring.py`, MỚI hàm `gate`). Trước đây chỉ có
+một ngưỡng phẳng (`ratio < scoring_threshold_ratio` → chặn), bỏ mất tầng giữa của spec:
+`≥8/12` vào lệnh · `6-7/12` **xem xét thêm nếu `A1+B1+C1 ≥ 5`** · `<6/12` huỷ. Triển khai:
+
+- `ScoringResult.core_total` = điểm đạt trong riêng A1/B1/C1. `A1(2)+B1(2)+C1(1) = 5` đúng
+  bằng ngưỡng spec, nên điều kiện thực chất là **cả ba đều đạt** — ghi rõ trong code để
+  không ai đọc "≥5" thành một phép cộng lỏng.
+- `core_required` để **tuyệt đối, không quy về ratio**: A1/B1/C1 không bao giờ chứa volume
+  (A3) nên tổng đã so được giữa FOREX (max 10) và VN (max 12); quy ratio ở đây sẽ vô cớ
+  làm ngưỡng khác nhau giữa hai lớp tài sản.
+- `breakout.scoring_secondary_threshold_ratio` (mặc định `0.5` = 6/12, đúng biên dưới của
+  dải giữa). Dưới biên này **không có đường cứu** — spec ghi "`<6/12` → ❌ hủy" vô điều kiện.
+- Logic ngưỡng nằm trong `scoring.gate` (thuần, có test riêng) chứ không nhúng vào
+  `main_loop`; `main_loop` chỉ gọi và ghi `core_total` vào `detail` của decision row.
+
+**2. `range_period` 20→30 và `range_width.atr_mult` 1.5→2.5** (spec_v2 §3). Hai số này là
+tàn dư của D2/D3 thời spec v1.2 — v1.2 **không** cho số nào cho độ rộng range nên D3 tự chọn
+1.5; v2 §3 cho số tường minh (30 nến M15/H1, width > 2.5×ATR14) nên **v2 thắng**. Kèm theo:
+
+- **VN profile (D1) đặt `range_period: 15`** (`config/profiles.py`). Bảng §3 chỉ có M15/H1
+  (30) và H4 (12-15), **không có dòng D1** — lấy biên trên của dòng khung-cao là một **suy
+  luận**, ghi ở đây để không ai coi là số của spec. Nếu không đặt, profile VN sẽ thừa hưởng
+  30 bar ngày ≈ 6 tuần range, gần như chắc chắn bóp chết tần suất lệnh VN.
+- `_consolidation_rows()` trong `test_strategies.py` nâng `n` 25→35: fixture BRB phải dài hơn
+  `range_period` để cả cửa sổ range là vùng tích luỹ (25 bar < 30 làm mọi test BRB không arm
+  được).
+
+**Kiểm chứng — cả hai thay đổi gần như KHÔNG đổi gì trên synthetic, và đó là kết quả trung
+thực chứ không phải chưa có hiệu lực:**
+
+- Tầng giữa không giải cứu candidate nào: `core_total` phân phối `{1: 11, 3: 12}` trên 23
+  candidate — **chưa bao giờ đạt 5**. A1 đạt 3/23 và không lần nào trùng với B1, nên
+  `A1+B1+C1 = 5` không xảy ra. Đúng bản chất random-walk (A1 = thân > 2×SMA10 body).
+- §3: số lần ARM 102→100, retest xác nhận 11→10 trên 5000 bar (đo bằng cách spy phase
+  transition). `decision_stream_hash` **không đổi** — không phải vì thay đổi vô hiệu, mà vì
+  hash chỉ phủ tuple `(bar_ts, symbol, reason, stage)`: một lần arm thêm/bớt mà không sinh
+  signal vẫn ghi đúng `no_signal/breakout`. `filter_block_counts` (không nằm trong hash) đổi
+  rõ: `range_width` 83→13 khi `range_period` 20→30 (cửa sổ rộng hơn ⇒ range rộng hơn ⇒ qua
+  ngưỡng 2.5×ATR dễ hơn).
+- Lệnh trên seed 42 vẫn **0** (scoring ON) / **3** (scoring OFF), y như sau 4 sửa trước.
+
+Kết luận vẫn như cũ và giờ có số để chống lưng: **điểm siết còn lại là ngưỡng scoring trên dữ
+liệu synthetic, không phải lỗi code.** Calibration đã được đưa thành trục sweep ưu tiên của
+`plans/11-optimization.md` (❓1, cập nhật 2026-07-26) kèm hai ràng buộc: không sweep trên
+synthetic, và số-trade-tối-thiểu là điều kiện sống-chết chứ không phải phụ.
+
+Test mới (`test_scoring.py`): `test_core_total_counts_only_a1_b1_c1`,
+`test_gate_primary_tier_passes_on_score_alone`,
+`test_gate_middle_tier_passes_only_with_all_core_criteria`,
+`test_gate_below_secondary_is_never_rescued`. Sửa
+`test_brb_scoring_gate_blocks_and_does_not_burn_state` (`test_main_loop.py`) đặt **cả hai**
+ngưỡng thành 1.1 — trước đó chỉ đặt ngưỡng chính, nên khi có tầng giữa nó có thể âm thầm
+thôi kiểm tra đúng thứ nó mang tên.

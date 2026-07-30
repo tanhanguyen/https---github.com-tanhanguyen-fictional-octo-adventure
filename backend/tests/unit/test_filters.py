@@ -390,6 +390,38 @@ def test_wick_pass_fail_boundary(base_ctx):
     assert not r.passed and r.blocking
 
 
+def test_wick_reads_the_retest_bar_not_the_breakout2_bar(base_ctx):
+    """BRB fires on the breakout-2 bar, `retest_bars_ago` bars after the retest. Reading
+    [-1] there inverted the filter: it demanded a fat rejection wick on the very candle
+    the strategy wants to be a big-body momentum bar, silently blocking every BRB signal
+    as `no_signal/wick`."""
+    signal = Signal(
+        direction=Direction.BUY,
+        strategy=StrategyName.BREAKOUT,
+        signal_bar_ts=base_ctx.now,
+        peak1=10.4,
+        retest_low=9.5,
+        retest_high=10.5,
+        retest_bars_ago=3,
+    )
+    open_, high, low, close = (
+        base_ctx.open_.copy(),
+        base_ctx.high.copy(),
+        base_ctx.low.copy(),
+        base_ctx.close.copy(),
+    )
+    # breakout-2 bar: full body, no lower wick at all -> would fail the old [-1] read
+    open_.iloc[-1], high.iloc[-1], low.iloc[-1], close.iloc[-1] = 10.0, 10.6, 10.0, 10.6
+    # retest bar, 3 bars back: long lower wick -> the candle the filter should judge
+    open_.iloc[-4], high.iloc[-4], low.iloc[-4], close.iloc[-4] = 10.0, 10.5, 9.5, 10.0
+
+    ctx = replace(base_ctx, open_=open_, high=high, low=low, close=close, signal=signal)
+    r = wick.evaluate(ctx)
+    assert r.passed and not r.blocking
+    assert r.values["retest_bars_ago"] == 3
+    assert r.values["wick_ratio"] == pytest.approx(0.5)
+
+
 def test_wick_not_applicable_mean_reversion(base_ctx):
     signal = Signal(
         direction=Direction.BUY, strategy=StrategyName.MEAN_REVERSION, signal_bar_ts=base_ctx.now

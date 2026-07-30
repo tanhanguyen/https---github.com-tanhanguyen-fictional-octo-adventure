@@ -47,6 +47,12 @@ def _vn_config(symbol: str, symbol_type: str) -> BotConfig:
             "symbols": [{"symbol": symbol, "symbol_type": symbol_type}],
         }
     )
+    # This file exercises ALLOW_SHORT/lot_below_min wiring through a hand-armed
+    # AWAITING_RETEST state that completes on the SAME bar (v1.2 shape) -- not the BRB
+    # Peak1/breakout-2 flow. Disable require_second_breakout so `_armed_sell_state`'s
+    # single-phase state still reaches `done` (BRB coverage lives in test_strategies.py /
+    # test_main_loop.py instead).
+    cfg.strategies.breakout.require_second_breakout = False
     return effective_config_for_symbol(cfg, cfg.symbols[0])
 
 

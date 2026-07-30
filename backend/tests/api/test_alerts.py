@@ -75,6 +75,17 @@ def test_marking_read_is_explicit_and_idempotent(client):
 def test_a_replay_run_produces_alerts_the_dashboard_can_toast(client):
     """Plan 13 definition of done, replay half: stepping the API's runner must land
     trade-lifecycle alerts in the log without Telegram being configured."""
+    # BRB's Peak1 -> retest -> breakout-2 -> scoring gate (docs/spec_v2.md) cuts entry
+    # frequency by design; fall back to v1.2 single-phase entries so this fixed
+    # seed/bar-count window reliably produces a trade -- this test is about the alert
+    # plumbing, not the strategy (BRB itself is covered by test_strategies.py /
+    # test_main_loop.py).
+    assert (
+        client.patch(
+            "/api/config", json={"strategies": {"breakout": {"require_second_breakout": False}}}
+        ).status_code
+        == 200
+    )
     assert client.post("/api/run", json={"seed": 42, "bars": 300}).status_code == 200
     for _ in range(300):
         client.post("/api/run/step")

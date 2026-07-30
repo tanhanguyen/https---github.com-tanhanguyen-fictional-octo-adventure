@@ -80,6 +80,16 @@ class Signal:
     # Breakout only:
     range_high: float | None = None
     range_low: float | None = None
+    # BRB (docs/spec_v2.md): peak1 (breakout-1 impulse extreme) and the retest bar's
+    # extremes, carried through so compute_sl/scoring can anchor on them at decision time.
+    peak1: float | None = None
+    retest_low: float | None = None
+    retest_high: float | None = None
+    # Bars between the confirmed retest bar and this (breakout-2) signal bar -- lets
+    # scoring.py re-locate the retest candle's OHLC inside FilterContext's series
+    # (ctx.open_.iloc[-(1 + retest_bars_ago)], etc.) without carrying the whole candle
+    # through Signal.
+    retest_bars_ago: int | None = None
 
 
 @dataclass(frozen=True)
