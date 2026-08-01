@@ -348,3 +348,82 @@ export interface AlertReadOut {
   marked: number
   unread: number
 }
+
+/** Plan 11: parameter sweeps + walk-forward. A sweep is started from the CLI; the web
+ *  layer is read-only, and every row links to the real run behind it. */
+export interface SweepSummaryOut {
+  id: number
+  kind: 'grid' | 'walkforward' | string
+  name: string
+  dataset_id: string
+  symbol: string
+  timeframe: string
+  status: string
+  n_combos: number
+  n_runs: number
+  created_at_utc: string
+  finished_at_utc: string | null
+  error: string | null
+}
+
+export interface SweepResultOut {
+  id: number
+  window_index: number
+  phase: 'is' | 'oos' | string
+  combo_index: number
+  params: Record<string, number | string | boolean>
+  run_id: number
+  config_version_id: number
+  metrics: Record<string, number | null>
+  metric_value: number | null
+  eligible: boolean
+  ineligible_reason: string
+  selected: boolean
+  window_from: string
+  window_to: string
+  decision_hash: string
+}
+
+/** Spread of the IS metric over ALL combos of a window — the noise check. */
+export interface SweepDistribution {
+  n: number
+  n_defined: number
+  n_eligible: number
+  min?: number
+  p25?: number
+  median?: number
+  p75?: number
+  max?: number
+  mean?: number
+}
+
+export interface SweepWindowOut {
+  window_index: number
+  is_from: string
+  is_to: string
+  oos_from: string
+  oos_to: string
+  n_combos: number
+  n_eligible: number
+  selected_params: Record<string, number | string | boolean> | null
+  is_metric: number | null
+  oos_metric: number | null
+  degradation: number | null
+  is_run_id: number | null
+  oos_run_id: number | null
+  distribution: SweepDistribution
+}
+
+export interface SweepEquityPointOut {
+  bar_ts_utc: string
+  equity: number
+}
+
+export interface SweepDetailOut extends SweepSummaryOut {
+  spec: Record<string, unknown>
+  axes: string[]
+  selection: { metric?: string; max_drawdown_pct?: number; min_trades?: number }
+  results: SweepResultOut[]
+  windows: SweepWindowOut[]
+  oos_equity: SweepEquityPointOut[]
+}

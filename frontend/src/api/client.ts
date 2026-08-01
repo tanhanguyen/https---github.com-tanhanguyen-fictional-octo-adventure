@@ -21,6 +21,8 @@ import type {
   RunReportOut,
   RunStepOut,
   RunSummaryOut,
+  SweepDetailOut,
+  SweepSummaryOut,
   SymbolOut,
   TradeDetailOut,
   TradeOut,
@@ -91,9 +93,14 @@ export const api = {
     http.post<NewsImportOut>('/news/import', { path }).then((r) => r.data),
 
   getRun: () => http.get<RunOut | null>('/run').then((r) => r.data),
-  createRun: (seed: number, bars: number, datasetId?: string) =>
+  createRun: (seed: number, bars: number, datasetId?: string, timeframe?: string) =>
     http
-      .post<RunOut>('/run', { seed, bars, dataset_id: datasetId ?? null })
+      .post<RunOut>('/run', {
+        seed,
+        bars,
+        dataset_id: datasetId ?? null,
+        timeframe: timeframe ?? null,
+      })
       .then((r) => r.data),
   step: () => http.post<RunStepOut[]>('/run/step').then((r) => r.data),
 
@@ -114,6 +121,9 @@ export const api = {
     http
       .get<TradeOut[]>(`/runs/${id}/trades`, { params: status ? { status } : {} })
       .then((r) => r.data),
+  listSweeps: () => http.get<SweepSummaryOut[]>('/sweeps').then((r) => r.data),
+  getSweep: (id: number) => http.get<SweepDetailOut>(`/sweeps/${id}`).then((r) => r.data),
+
   play: (intervalMs = 200) =>
     http.post<RunOut>('/run/play', { interval_ms: intervalMs }).then((r) => r.data),
   pause: () => http.post<RunOut | null>('/run/pause').then((r) => r.data),

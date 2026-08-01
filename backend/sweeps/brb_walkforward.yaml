@@ -1,0 +1,47 @@
+# Plan 11 §2 — walk-forward trên chính trục BRB của ❓1, cửa sổ ❓3 (IS 12m / OOS 3m / trượt 3m).
+#
+# Lưới ở đây HẸP hơn `brb_calibration.yaml` một cách có chủ đích: walk-forward chạy cả lưới
+# trên MỖI cửa sổ IS, nên chi phí là (số tổ hợp + 1) × số cửa sổ. Hai trục giữ lại là hai
+# trục nới phễu mạnh nhất theo docs/decisions.md; đúng 2 trục cũng là điều kiện để trang
+# Sweep vẽ được heatmap.
+#
+# Dải ngưỡng ở đây là 0.20/0.30/0.40 chứ không phải 0.50-0.66 của ❓1: đo trên 8.5 năm
+# EURUSD 1H cho thấy điểm số thực tế không bao giờ vượt 4/10, nên dải ❓1 cho 0 lệnh ở mọi
+# cửa sổ và walk-forward sẽ không có gì để báo cáo. Xem docs/decisions.md mục Plan 11.
+name: brb-walkforward
+dataset: c5f07f66b687b346    # EURUSD 1H thật (data/csv/EURUSD_real_1h.csv)
+symbol: EURUSD
+timeframe: "1H"
+from: "2022-01-01"
+to: "2026-07-01"
+
+axes:
+  strategies.breakout.scoring_threshold_ratio: [0.20, 0.30, 0.40]
+  strategies.breakout.peak_min_atr_mult: [0.7, 1.0]
+
+# Xem `brb_threshold_eurusd_1h.yaml` để biết vì sao phải kéo nền về cấu hình hiện hành.
+base_patch:
+  strategies:
+    breakout:
+      range_period: 30
+  filters:
+    range_width:
+      atr_mult: 2.5
+    session:
+      enabled: true
+  execution:
+    costs:
+      spread_pips: 1.0
+      slippage_pips: 0.5
+
+# ❓2 chốt bởi user 2026-07-30.
+selection:
+  metric: profit_factor
+  max_drawdown_pct: 20.0
+  min_trades: 30
+
+# ❓3 chốt bởi user 2026-07-30.
+walkforward:
+  is_months: 12
+  oos_months: 3
+  step_months: 3

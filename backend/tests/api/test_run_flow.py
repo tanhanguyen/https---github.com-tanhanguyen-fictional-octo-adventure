@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "csv" / "eurusd_15m_sample.csv"
+DAILY_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "csv" / "hpg_1d_sample.csv"
 
 
 def test_full_run_flow(client: TestClient) -> None:
@@ -42,6 +46,62 @@ def test_full_run_flow(client: TestClient) -> None:
 def test_step_without_run_returns_409(client: TestClient) -> None:
     resp = client.post("/api/run/step")
     assert resp.status_code == 409
+
+
+def test_create_run_with_coarser_dataset_returns_400(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets/import",
+        json={"path": str(DAILY_FIXTURE), "symbol": "EURUSD", "native_tf": "1D"},
+    ).json()
+
+    resp = client.post("/api/run", json={"dataset_id": dataset["id"]})
+
+    assert resp.status_code == 400
+    assert "coarser" in resp.json()["detail"]
+
+
+def test_create_run_with_unknown_dataset_returns_404(client: TestClient) -> None:
+    resp = client.post("/api/run", json={"dataset_id": "does-not-exist"})
+    assert resp.status_code == 404
+
+
+def test_create_run_with_timeframe_overrides_the_config_default(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets/import",
+        json={"path": str(FIXTURE), "symbol": "EURUSD", "native_tf": "15m"},
+    ).json()
+
+    resp = client.post(
+        "/api/run",
+        json={"dataset_id": dataset["id"], "timeframe": "1H"},
+    )
+    assert resp.status_code == 200
+    run = resp.json()
+
+    for _ in range(50):
+        step_resp = client.post("/api/run/step")
+        summaries = step_resp.json()
+        if summaries[0]["exhausted"]:
+            break
+
+    bars = client.get(f"/api/runs/{run['id']}/bars", params={"tf": "1H", "limit": 20000}).json()
+    assert bars
+    stamps = [b["ts_utc"] for b in bars[:5]]
+    for a, b in zip(stamps, stamps[1:]):
+        assert a < b
+
+
+def test_create_run_with_unknown_timeframe_returns_400(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets/import",
+        json={"path": str(FIXTURE), "symbol": "EURUSD", "native_tf": "15m"},
+    ).json()
+
+    resp = client.post(
+        "/api/run",
+        json={"dataset_id": dataset["id"], "timeframe": "5m"},
+    )
+    assert resp.status_code == 400
 
 
 def test_play_pause(client: TestClient) -> None:

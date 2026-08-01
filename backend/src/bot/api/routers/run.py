@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from bot.api.deps import get_runner_service
 from bot.api.run_service import RunnerService
 from bot.api.schemas import PlayIn, RunCreateIn, RunOut, RunStepOut
+from bot.core.errors import ConfigError
 
 router = APIRouter()
 
@@ -26,7 +27,17 @@ def create_run(
     body: RunCreateIn | None = None, service: RunnerService = Depends(get_runner_service)
 ) -> RunOut:
     body = body or RunCreateIn()
-    info = service.create_run(seed=body.seed, bars=body.bars, dataset_id=body.dataset_id)
+    try:
+        info = service.create_run(
+            seed=body.seed,
+            bars=body.bars,
+            dataset_id=body.dataset_id,
+            timeframe=body.timeframe,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="dataset not found") from exc
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_out(info)
 
 

@@ -1196,3 +1196,233 @@ Test mới (`test_scoring.py`): `test_core_total_counts_only_a1_b1_c1`,
 `test_brb_scoring_gate_blocks_and_does_not_burn_state` (`test_main_loop.py`) đặt **cả hai**
 ngưỡng thành 1.1 — trước đó chỉ đặt ngưỡng chính, nên khi có tầng giữa nó có thể âm thầm
 thôi kiểm tra đúng thứ nó mang tên.
+
+## Plan 11 — Sweep tham số + walk-forward + báo cáo overfit (2026-07-30)
+
+Công cụ **nghiên cứu**, không phải tính năng giao dịch: quét lưới tham số và đo mức overfit.
+**Engine không đổi một dòng nào** — một sweep là N run bình thường qua đúng `engine.runner`,
+nên `test_replay_golden` không liên quan và không phải re-pin (bất biến #1).
+
+### Ba câu hỏi mở của plan — user chốt 2026-07-30
+
+| | Chốt |
+|---|---|
+| ❓1 trục quét | Đúng như bản cập nhật 2026-07-26 của plan: `scoring_threshold_ratio` → `peak_min_atr_mult` → `retest_max_depth_atr_mult` → `max_sl_atr_mult`. Cả 4 đã configurable. |
+| ❓2 metric chọn trên IS | **profit factor**, ràng buộc **max_drawdown ≤ 20%** và **số lệnh ≥ 30** |
+| ❓3 cửa sổ walk-forward | **IS 12 tháng / OOS 3 tháng / trượt 3 tháng** |
+| Dataset | **EURUSD 1H thật** (`data/csv/EURUSD_real_1h.csv`, 100 000 bar, 2010-07 → 2026-07) |
+
+Hai giá trị ❓2/❓3 nằm trong `research.spec.Selection` / `WalkForward` làm **mặc định**, và
+có test pin đúng con số (`test_selection_defaults_are_the_values_the_user_chose`) để một lần
+đổi mặc định âm thầm sẽ làm đỏ test chứ không âm thầm đổi kết luận của mọi sweep cũ.
+
+### Kiến trúc
+
+`bot/research/` đứng **cạnh** `api`, **trên** `engine` — nó điều khiển engine chứ không nằm
+trong engine. `test_dependency_direction.py` thêm luật `research` không được import `api`
+(nếu không, một job batch sẽ kéo cả web framework theo).
+
+- `spec.py` — YAML spec + liệt kê tổ hợp. **Điểm chốt chặn của ràng buộc cứng plan 11**:
+  `validate_param_path` đi bộ trên chính pydantic model của `BotConfig`, nên một trục gõ sai
+  (`scoring_treshold_ratio`) **fail ngay khi đọc spec**. Không có chỗ này thì deep-merge sẽ
+  âm thầm nuốt key lạ, sweep chạy trơn tru và mọi dòng ra số giống hệt nhau — trông như
+  "tham số không ảnh hưởng gì" trong khi thật ra nó chưa bao giờ tới engine.
+- `windows.py` — cắt cửa sổ, nơi ở của bảo đảm chống leak (xem mục dưới).
+- `execute.py` — một tổ hợp = một run: config version mới → `repo.create_run` → `Runner.step()`
+  tới hết → `compute_run_report`. Không có đường tắt nào bỏ qua engine.
+- `sweep.py` / `walkforward.py` — điều phối, chọn tổ hợp, báo cáo overfit.
+- `worker.py` + `merge.py` — `--workers N`.
+- Bảng `sweep` / `sweep_result` / `sweep_window` (migration 007). `sweep_result` **luôn trỏ về
+  một `run` thật** trong registry; `metrics_json` chỉ là cache để sort bảng mà không phải tính
+  lại 100+ report mỗi lần mở trang.
+
+### Chống leak — hai bảo đảm ngược chiều nhau
+
+1. **Không bar tương lai trong feed của cửa sổ.** `window_frames` cắt `index < end` trên **mọi**
+   timeframe. Đường rò tinh vi là khung cao: một nến 4H có thể chứa 4 nến 1H bên kia điểm cắt —
+   nhưng nến đó (a) bị cắt nếu mở sau `end`, và (b) nếu mở trước `end` mà đóng sau `end` thì
+   `Feed` (C11) giấu nó cho tới khi đóng, mà `clock.now` không bao giờ vượt `end`.
+2. **Warmup chỉ nhìn về sau.** Feed mang thêm `warmup_bars_required(tf)` bar **trước** `start`,
+   cursor của Runner đặt đúng ở `start` (dùng `build_symbol_context(cursor=...)` sẵn có của
+   plan 07). Warmup đếm bằng **số bar, không phải khoảng thời gian** — dữ liệu forex thật có
+   khoảng trống cuối tuần/lễ nên một `timedelta` cố định sẽ âm thầm thiếu warmup quanh ngày lễ.
+
+Test biên: `test_walkforward_windows.py` (trên helper) **và** `test_walkforward.py::
+test_no_oos_run_ever_decided_on_an_in_sample_bar` (trên bảng `decision` đã ghi — tức trên cái
+engine thực sự làm, không phải trên helper đã được test riêng).
+
+### Quyết định phát sinh (và vì sao)
+
+1. **Config version của sweep tạo với `activate=False`.** Vẫn là version bất biến thật (bất
+   biến #7) và run trỏ về nó, nhưng một job nghiên cứu 108 tổ hợp **không được** đổi config
+   đang active của user 108 lần như một tác dụng phụ. Có test riêng.
+2. **Metric không xác định ⇒ KHÔNG đủ điều kiện, không phải +∞.** `profit_factor` là `None` khi
+   run không có lệnh thua nào. Xếp nó thành +∞ thì với `min_trades ≥ 30` nó sẽ **thắng mọi cửa
+   sổ** một cách âm thầm. Fail-closed: loại, ghi lý do `profit_factor undefined`.
+3. **Cửa sổ không có tổ hợp nào đạt ràng buộc ⇒ KHÔNG chạy OOS.** Đúng ưu tiên "ít lỗ, ít sự
+   cố" của user: một cửa sổ không hiệu chỉnh được thì báo cáo là không hiệu chỉnh được, chứ
+   không đem một tổ hợp thua ràng buộc ra chạy tiếp.
+4. **Cửa sổ OOS cuối bị cắt cụt thì BỎ, không rút ngắn.** Báo cáo một cửa sổ 1 tháng OOS cạnh
+   những cửa sổ 3 tháng sẽ làm cột "suy giảm" mất tính so sánh.
+5. **Equity OOS nối bằng TỶ SUẤT, không phải mức tuyệt đối.** Mỗi run OOS bắt đầu lại từ
+   `starting_equity`, nên chuỗi sau được nhân theo equity cuối chuỗi trước. Ghi rõ trong
+   docstring: đó là kết quả *cộng dồn* của walk-forward, không phải khẳng định rằng các cửa sổ
+   đã chạy trên cùng một tài khoản.
+6. **Sweep chỉ một symbol.** Mục đích là quy một thay đổi metric về một tham số; danh mục thêm
+   ràng buộc chéo (daily-loss chung, `MAX_CONCURRENT_TRADES`) làm mất tính quy nạp đó.
+7. **API chỉ ĐỌC — không có `POST /api/sweeps`.** Một lưới 108 tổ hợp là hàng giờ CPU; nó thuộc
+   về CLI, không thuộc về một request HTTP mà tab trình duyệt sẽ timeout. Trang web là nơi *đọc*
+   kết quả.
+8. **`--workers N`: một DB tạm cho MỖI tổ hợp, merge theo đúng thứ tự tổ hợp.** sqlite tuần tự
+   hoá writer theo file, mà engine commit gần như mỗi bar (1 decision + ~16 `decision_filter`),
+   nên N process ghi chung một file sẽ dành phần lớn thời gian retry `SQLITE_BUSY`. Merge bằng
+   `imap` (CÓ thứ tự) làm kết quả song song **trùng khít** kết quả tuần tự tới tận `run_id` —
+   `test_parallel_workers_reproduce_the_sequential_result` so cả fingerprint lẫn số dòng
+   `decision`/`decision_filter`/`equity_point` và kiểm tra không có FK mồ côi sau remap.
+   Một `WorkerPool` dùng cho **cả** walk-forward (không phải mỗi cửa sổ một pool): mỗi worker
+   nạp bundle CSV 100k bar trong initializer, trả lại phí đó 14 lần là vài phút đọc lại vô ích.
+   Worker DB được gieo sẵn `dataset` + `news_event` (giữ nguyên id) vì `create_run` đóng băng
+   `news_snapshot_max_id` từ `MAX(news_event.id)` — thiếu chúng thì run song song sẽ khác run
+   tuần tự khi filter `news` bật.
+9. **Guard chi phí**: in số run + số bar/run + ước lượng thời gian **trước** khi tạo bất cứ dòng
+   nào; > 200 run thì đòi `--yes`.
+
+### Sweep THẬT đầu tiên — và nó nói gì (EURUSD 1H, 2018-01 → 2026-07, 52 956 bar/run)
+
+`sweeps/brb_threshold_eurusd_1h.yaml`, 7 giá trị `scoring_threshold_ratio`, chi phí
+spread 1.0 pip + slippage 0.5 pip, session ON, `range_period=30`, `range_width=2.5`:
+
+| ngưỡng | số lệnh / 8.5 năm | profit factor | max DD % | đạt ràng buộc ❓2 |
+|---|---|---|---|---|
+| 0.20 | 12 | 1.391 | 1.50 | không |
+| 0.30 | 12 | 1.044 | 2.06 | không |
+| 0.40 | 11 | 1.241 | 2.05 | không |
+| 0.50 | 7 | **1.671** | 2.05 | không |
+| 0.55 | 4 | 0.088 | 1.43 | không |
+| 0.60 | 4 | 0.088 | 1.43 | không |
+| **0.66 (mặc định hiện tại)** | **2** | 0.000 | 0.73 | không |
+
+**Kết luận — và nó KHÔNG phải "chọn 0.50":**
+
+1. **Ràng buộc N ≥ 30 của ❓2 không với tới được trên dữ liệu này.** BRB ra ~1.4 lệnh/năm
+   trên EURUSD 1H; 8.5 năm mới được 12 lệnh ở ngưỡng lỏng nhất. **Không tổ hợp nào đạt
+   ràng buộc**, nên sweep trả lời "chưa hiệu chỉnh được", không trả lời "tham số tốt nhất là
+   X". Đây đúng là tình huống plan 11 ❓1 điểm (b) cảnh báo trước ("PF của 2 lệnh thì vô
+   nghĩa") — giờ có số thật để chống lưng.
+2. **PF xếp hạng KHÔNG đơn điệu và bị mẫu bé chi phối**: 0.50 dẫn đầu với 7 lệnh, còn 0.20
+   (12 lệnh) chỉ 1.391. Chênh lệch ở cỡ mẫu này là nhiễu. Nếu bỏ ràng buộc N mà chọn theo
+   PF thì sẽ chọn đúng tổ hợp ÍT lệnh nhất còn có lãi — chính là cái bẫy ràng buộc N sinh ra
+   để chặn.
+3. **Từ 0.55 trở lên phễu gần như đóng**: 4 lệnh / 8.5 năm, và mặc định hiện tại 0.66 chỉ
+   còn **2 lệnh**. 0.55 và 0.60 cho kết quả TRÙNG KHÍT (cùng 4 lệnh, cùng hash) — phân bố
+   điểm có khoảng trống giữa hai mốc đó, không phải lỗi.
+4. Đo lần đầu trên **1 năm** (2025-07 → 2026-07, sweep #2 còn trong DB) cho **0 lệnh ở mọi
+   ngưỡng**, điểm cao nhất chạm gate chỉ 4/10: một cửa sổ 1 năm quá ngắn để nói bất cứ điều
+   gì về BRB. Đó là lý do dải trục được **mở rộng xuống 0.20/0.30/0.40** và cửa sổ kéo lên
+   8.5 năm.
+
+**Việc còn mở sau plan 11** (không tự quyết ở đây vì nó là câu hỏi chiến lược, không phải
+tham số): muốn BRB đủ số lệnh để hiệu chỉnh được thì phải đổi *cái khác* chứ không phải
+ngưỡng — khung thời gian thấp hơn, nhiều symbol hơn, hoặc nới chính ma trận điểm số
+(A1 "thân > 2×SMA10" và B2 engulfing gần như không bao giờ đạt). Ba hướng đó đều là **rời
+spec_v2**, cần user gật riêng.
+
+### Walk-forward THẬT (EURUSD 1H, IS 12m/OOS 3m/trượt 3m, 2022-01 → 2026-07, 14 cửa sổ)
+
+**Chính thức** (`sweeps/brb_walkforward.yaml`, ❓2 nguyên văn N ≥ 30, PF, DD ≤ 20%) — sweep #6,
+DONE, 84 run IS, 0 run OOS:
+
+**0/14 cửa sổ có bất kỳ tổ hợp nào đạt ràng buộc trên IS** — mỗi cửa sổ 12 tháng cho tối đa
+6 lệnh (thường 2–5), không bao giờ chạm N ≥ 30, nên walk-forward chính thức **không chạy OOS
+lần nào**. Đây không phải lỗi của cỗ máy: nó là hệ quả trực tiếp của kết luận sweep ngưỡng ở
+trên, lặp lại trên từng cửa sổ 12 tháng thay vì một cửa sổ 8.5 năm — và củng cố nó bằng một
+phép đo độc lập.
+
+**Chẩn đoán** (`sweeps/brb_walkforward_diagnostic.yaml`, hạ `min_trades: 1`, đổi metric sang
+`expectancy_r` vì PF là `None` khi cửa sổ không có lệnh thua) — sweep #7, DONE, 84 run IS +
+14 run OOS, **14/14 cửa sổ "đạt ràng buộc"** (ràng buộc đã hạ tối thiểu) — bảng IS-vs-OOS:
+
+| cửa sổ | IS | OOS | trades OOS | suy giảm |
+|---|---|---|---|---|
+| 0 | 2.250 | −0.061 | — | −102.7% |
+| 1 | 1.114 | −0.042 | — | −103.8% |
+| 2 | 0.418 | −0.512 | — | −222.5% |
+| 3 | −0.144 | −0.268 | — | −86.6% |
+| 4 | −0.144 | 0.737 | — | +613.5% |
+| 5 | −0.199 | −1.023 | — | −414.3% |
+| 6 | −0.766 | 2.250 | — | +393.9% |
+| 7 | 0.286 | −0.141 | — | −149.4% |
+| 8 | 0.337 | 2.250 | — | +568.2% |
+| 9 | 0.639 | −0.440 | 1 | −168.9% |
+| 10 | 0.755 | −0.285 | 2 | −137.7% |
+| 11 | 0.103 | −1.029 | 2 | −1097.3% |
+| 12 | 0.266 | 0.759 | 2 | +185.1% |
+| 13 | −0.726 | −0.584 | 2 | +19.5% |
+
+Suy giảm IS→OOS trung bình: **−50.2%** trên 14 cửa sổ. Tổ hợp thắng gần như luôn là
+`scoring_threshold_ratio=0.2` (ngưỡng lỏng nhất trong dải chẩn đoán) — đúng như cảnh báo ở
+đầu file spec: đây là hệ quả của việc hạ `min_trades` xuống 1, không phải một tín hiệu tối ưu
+hoá thật.
+
+**Kết luận — đọc bảng này như thế nào:**
+
+1. **Không được dùng bảng chẩn đoán để chọn tham số.** Mỗi cửa sổ OOS chỉ có 0–2 lệnh; dấu và
+   độ lớn của `expectancy_r` ở cỡ mẫu đó là nhiễu thuần tuý (cửa sổ 6 và 8: suy giảm *dương*
+   > +390% chỉ vì 1-2 lệnh OOS thắng lớn, không phải BRB "tốt hơn ngoài mẫu"). Đây đúng là lý
+   do ❓2 chốt N ≥ 30 — và đúng là ràng buộc mà walk-forward chính thức tôn trọng bằng cách
+   không chạy OOS.
+2. **Kết luận thật của plan 11 walk-forward là kết luận của bản CHÍNH THỨC: 0/14 cửa sổ hiệu
+   chỉnh được.** Bảng chẩn đoán chỉ tồn tại để chứng minh cỗ máy walk-forward (cắt cửa sổ,
+   chọn trên IS, chạy đúng 1 lần OOS, nối equity, tính suy giảm) chạy đúng đầu-cuối và báo cáo
+   overfit đọc được khi có dữ liệu — không phải để rút ra tham số.
+3. **`test_no_oos_run_ever_decided_on_an_in_sample_bar` được xác nhận thêm một lần nữa trên dữ
+   liệu thật**: cả hai lần chạy, 84 run IS luôn dừng ở đúng ranh giới cửa sổ, và (ở bản chẩn
+   đoán) 14 run OOS luôn bắt đầu đúng ở đầu cửa sổ OOS — khớp với test biên đã có trên helper.
+
+### Trục cấu trúc còn lại — `brb_calibration.yaml` (27 tổ hợp, EURUSD 1H, 2018-01 → 2026-07)
+
+Ba trục còn lại của ❓1 (`peak_min_atr_mult` × `retest_max_depth_atr_mult` × `max_sl_atr_mult`,
+3×3×3), ngưỡng điểm số ghim ở 0.50 (giá trị PF cao nhất của sweep ngưỡng ở trên). sweep #8,
+DONE, 27 run, **0/27 đạt ràng buộc** — bảng 10 dòng đứng đầu theo PF (xem log đầy đủ trong
+`sweeps/`):
+
+| PF | lệnh | DD % | peak_min | retest_depth | max_sl |
+|---|---|---|---|---|---|
+| 2.897 | 3 | 0.67 | 1.3 | 0.5 | 2.5 |
+| 2.141 | 3 | 0.91 | 1.3 | 0.5 | 3.0 |
+| 2.141 | 3 | 0.91 | 1.3 | 0.5 | 3.5 |
+| 1.716 | 7 | 1.98 | 1.0 | 0.5 | 3.0 |
+| 1.671 | 7 | 2.05 | 1.0 | 1.0 / 1.5 | 3.0 |
+| 1.648 | 9 | 1.98 | 1.0 | 0.5 | 3.5 |
+| 1.606 | 9 | 2.05 | 1.0 | 1.0 / 1.5 | 3.5 |
+| 1.564 | 7 | 1.09 | 1.3 | 1.0 / 1.5 | 2.5 |
+| 1.239 | 5 | 1.54 | 1.0 | 0.5 | 2.5 |
+| 1.204 | 12 | 2.51 | 0.7 | 1.0 / 1.5 | 3.0 |
+
+Tổ hợp nhiều lệnh nhất trong cả lưới: `peak_min=0.7, retest_depth=0.5, max_sl=3.5` → 14 lệnh,
+vẫn cách xa N ≥ 30 hơn hai lần. Cùng một mẫu hình với sweep ngưỡng: `peak_min` càng lớn thì
+càng ít lệnh (siết điều kiện "đỉnh phải cách xa"), và PF nhìn cao nhất lại rơi đúng vào những
+ô 3 lệnh — mẫu quá bé để phân biệt với nhiễu. `retest_max_depth_atr_mult` gần như không đổi
+số lệnh hay PF trong dải quét (so hàng 1.0 và 1.5 trùng khít ở nhiều tổ hợp) — trục này không
+phải nút thắt.
+
+**Kết luận chung cho cả ba mảnh (ngưỡng, walk-forward, cấu trúc):** cùng một sự thật xuất hiện
+ba lần độc lập — BRB trên EURUSD 1H tạo quá ít tín hiệu (~1–2 lệnh/năm) để bất kỳ tổ hợp tham
+số nào trong không gian đã quét chạm ràng buộc N ≥ 30 của ❓2. Không có ngưỡng/cấu trúc "tốt
+nhất" được chọn ra từ plan 11 — kết luận là **chưa hiệu chỉnh được trên dữ liệu/cấu hình này**,
+và hướng đi tiếp theo (khung thời gian thấp hơn, nhiều symbol, hoặc nới ma trận điểm số) là
+quyết định chiến lược nằm ngoài phạm vi plan 11, cần user gật riêng.
+
+### Test mới
+
+| File | Phủ |
+|---|---|
+| `tests/unit/test_sweep_spec.py` | validate trục tham số (gõ sai → fail), liệt kê lưới, `mode: random` xác định theo seed, `Selection` (pin đúng giá trị ❓2/❓3), đọc YAML, và **các file `sweeps/*.yaml` checked-in phải parse được** |
+| `tests/unit/test_walkforward_windows.py` | lịch cửa sổ, cửa sổ cụt bị bỏ, **không timeframe nào mang bar quá điểm cắt**, warmup nằm trước cursor, cursor làm tròn LÊN, `degradation` |
+| `tests/unit/test_sweep_selection.py` | chọn tổ hợp trên dữ liệu dựng tay: ràng buộc thắng metric cao, tie-break theo combo_index, phân bố tính trên TOÀN BỘ tổ hợp |
+| `tests/integration/test_sweep.py` (slow) | mỗi tổ hợp ra một run drill-down được, config version mang đúng tham số, **sweep không cướp config đang active**, tham số thật sự đổi hành vi (hash khác nhau), hai sweep giống nhau ra kết quả giống hệt, **`--workers 4` ≡ tuần tự**, guard chi phí chặn trước khi tạo dòng nào |
+| `tests/integration/test_walkforward.py` (slow) | mỗi cửa sổ chạy đủ lưới trên IS + đúng 1 run OOS, **không run OOS nào quyết định trên bar in-sample** (kiểm trên bảng `decision` đã ghi, không phải trên helper), cửa sổ trượt đúng bước, báo cáo overfit có phân bố đầy đủ, equity OOS nối |
+| `tests/api/test_sweeps.py` | `GET /api/sweeps`, `GET /api/sweeps/{id}`, một dòng sweep mở được Report của run đó, 404 |
+| `tests/unit/test_dependency_direction.py` | thêm luật `research` không được import `api` |
+
+`test_replay_golden` **không đổi** và không phải re-pin: plan này không chạm engine.

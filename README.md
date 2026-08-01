@@ -72,6 +72,34 @@ JSON dạng TradingView/vnstock `{t,o,h,l,c,v}`):
 ./.venv/bin/python -m scripts.convert_csv vnstock --glob "data/examples/phai sinh vnstock/*VN30F1M*.json" --out data/csv/VN30F1M_1D.csv
 ```
 
+### Cách A″ — Sweep tham số + walk-forward (plan 11)
+
+Công cụ **nghiên cứu**: quét một lưới tham số (chỉ những tham số **đã có sẵn trong config**)
+và chạy walk-forward để đo mức overfit. Mỗi tổ hợp là **một run bình thường** — có config
+version riêng, có trong run registry, mở được trang Report như mọi run khác.
+
+```bash
+cd backend
+./.venv/bin/python -m bot.cli import-csv --path data/csv/EURUSD_real_1h.csv --symbol EURUSD --native-tf 1H
+# điền dataset id vừa in ra vào `dataset:` trong sweeps/*.yaml
+./.venv/bin/python -m bot.cli sweep --config sweeps/brb_calibration.yaml --workers 6 --yes
+./.venv/bin/python -m bot.cli walkforward --config sweeps/brb_walkforward.yaml --workers 6 --yes
+```
+
+- `--workers N`: mỗi tổ hợp chạy trong một process với DB tạm riêng rồi merge về DB chính
+  (tránh tranh chấp write SQLite). Kết quả **giống hệt** chạy tuần tự — có test giữ.
+- `--yes`: bỏ qua guard chi phí (mặc định > 200 run thì hỏi). Lệnh luôn in trước số run +
+  số bar/run + ước lượng thời gian.
+- **Không sweep trên dữ liệu synthetic** — random-walk không sinh xung lực thật nên hai tiêu
+  chí A1/B2 của ma trận điểm gần như không bao giờ đạt; sweep ở đó chỉ đo bộ sinh số ngẫu
+  nhiên (`plans/11-optimization.md` ❓1).
+- ⚠️ Sweep tốn **đĩa**: mỗi run ghi ~16 dòng `decision_filter` mỗi bar (~2KB/bar). Một lưới
+  108 tổ hợp × 6000 bar ≈ 1.3 GB trong `data/runtime.db`. Dùng `--db` để tách ra file khác
+  nếu không muốn lẫn với runtime.
+
+Kết quả xem ở trang **Sweeps** của dashboard (bảng sortable, heatmap khi đúng 2 trục, bảng
+IS-vs-OOS + equity OOS nối cho walk-forward), hoặc đọc thẳng bản tóm tắt CLI in ra cuối lệnh.
+
 ### Cách A′ — Live paper trading (plan 07)
 
 Chạy 24/7 trên dữ liệu **thật, thời gian thực** (Binance USDⓈ-M Futures klines — công khai,
@@ -286,11 +314,12 @@ backend/src/bot/
 ├── data/         synthetic feed (mock), csv_feed, live_feed (Binance futures), resample, dataset
 ├── db/           SQLite schema + repositories (bộ đếm DERIVED, config versioned)
 ├── alerts/       plan 13: event bus (DB luôn ghi + Telegram + web toast), DB alert riêng
+├── research/     plan 11: sweep tham số, walk-forward, báo cáo overfit (đứng CẠNH api, trên engine)
 ├── api/          FastAPI routers (mỏng) trên RunnerService
 ├── notify.py     định dạng cảnh báo + transport Telegram (không token → log-only)
-└── cli.py        `python -m bot.cli replay|live|ab|import-csv|import-news`
+└── cli.py        `python -m bot.cli replay|live|ab|import-csv|import-news|sweep|walkforward`
 
-frontend/src/     React + Vite + TS — pages/ Dashboard, Config, Decisions, Trades
+frontend/src/     React + Vite + TS — pages/ Dashboard, Config, Decisions, Trades, Runs, Sweeps
 docs/             spec_v1_2.md (nguồn chân lý), decisions.md (C1–C11, D1–D11, sai lệch)
 ```
 

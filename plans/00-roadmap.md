@@ -102,6 +102,12 @@ máy trạng thái v1.2 để A/B. Chi tiết + 5 điểm giải mâu thuẫn sp
 khớp-ở-open, deviation #7 TP-chốt-lúc-fill, D5 retest-theo-ATR, TP2 = R cố định thay vì
 trailing fractal): `docs/decisions.md` mục "BRB v2".
 
+Quyết định user (2026-07-30, plan 11 — sweep + walk-forward): (a) ❓2 metric chọn tham số
+trên IS = **profit factor**, ràng buộc **max_drawdown ≤ 20%** và **số lệnh ≥ 30**;
+(b) ❓3 cửa sổ walk-forward = **IS 12 tháng / OOS 3 tháng / trượt 3 tháng**; (c) dataset thật
+= **EURUSD 1H** (`data/csv/EURUSD_real_1h.csv`, 2010-07 → 2026-07). Kết quả sweep thật đầu
+tiên + mọi quyết định triển khai: `docs/decisions.md` mục "Plan 11".
+
 **Cảnh báo cho mọi plan sau**: BRB đổi ý nghĩa của "nến quyết định". Ở v1.2 nến quyết định
 *là* nến retest; ở BRB nó là nến **breakout-2**, còn nến retest nằm `signal.retest_bars_ago`
 bar trước đó. Bất kỳ filter/report/snapshot nào cần soi "nến retest" **phải** dùng offset đó,

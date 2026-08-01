@@ -548,6 +548,11 @@ def list_news_events_upto(conn: sqlite3.Connection, max_id: int) -> list[sqlite3
     return list(cur.fetchall())
 
 
+def list_news_events(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    cur = conn.execute("SELECT * FROM news_event ORDER BY id")
+    return list(cur.fetchall())
+
+
 def list_news_events_range(
     conn: sqlite3.Connection, from_ts: str | None, to_ts: str | None
 ) -> list[sqlite3.Row]:
@@ -561,4 +566,159 @@ def list_news_events_range(
         params.append(to_ts)
     query += " ORDER BY ts_utc ASC"
     cur = conn.execute(query, params)
+    return list(cur.fetchall())
+
+
+# ---------------------------------------------------------------------------
+# sweep / sweep_result / sweep_window (plan 11): research bookkeeping. Every result
+# row points at a real `run` -- these tables never hold a second copy of the truth.
+# ---------------------------------------------------------------------------
+
+
+def create_sweep(
+    conn: sqlite3.Connection,
+    kind: str,
+    name: str,
+    dataset_id: str,
+    symbol: str,
+    timeframe: str,
+    spec_json: str,
+    base_config_version_id: int | None,
+    n_combos: int,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO sweep(kind, name, dataset_id, symbol, timeframe, spec_json, "
+        "base_config_version_id, status, n_combos, created_at_utc) "
+        "VALUES (?,?,?,?,?,?,?,'RUNNING',?,datetime('now'))",
+        (kind, name, dataset_id, symbol, timeframe, spec_json, base_config_version_id, n_combos),
+    )
+    conn.commit()
+    return _lastrowid(cur)
+
+
+def finish_sweep(
+    conn: sqlite3.Connection, sweep_id: int, status: str, n_runs: int, error: str = ""
+) -> None:
+    conn.execute(
+        "UPDATE sweep SET status=?, n_runs=?, error=?, finished_at_utc=datetime('now') WHERE id=?",
+        (status, n_runs, error, sweep_id),
+    )
+    conn.commit()
+
+
+def insert_sweep_result(
+    conn: sqlite3.Connection,
+    sweep_id: int,
+    window_index: int,
+    phase: str,
+    combo_index: int,
+    params_json: str,
+    run_id: int,
+    config_version_id: int,
+    metrics_json: str,
+    metric_value: float | None,
+    eligible: bool,
+    ineligible_reason: str,
+    window_from: str,
+    window_to: str,
+    decision_hash: str,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO sweep_result(sweep_id, window_index, phase, combo_index, params_json, "
+        "run_id, config_version_id, metrics_json, metric_value, eligible, ineligible_reason, "
+        "window_from, window_to, decision_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            sweep_id,
+            window_index,
+            phase,
+            combo_index,
+            params_json,
+            run_id,
+            config_version_id,
+            metrics_json,
+            metric_value,
+            1 if eligible else 0,
+            ineligible_reason,
+            window_from,
+            window_to,
+            decision_hash,
+        ),
+    )
+    conn.commit()
+    return _lastrowid(cur)
+
+
+def mark_sweep_result_selected(conn: sqlite3.Connection, result_id: int) -> None:
+    conn.execute("UPDATE sweep_result SET selected=1 WHERE id=?", (result_id,))
+    conn.commit()
+
+
+def insert_sweep_window(
+    conn: sqlite3.Connection,
+    sweep_id: int,
+    window_index: int,
+    is_from: str,
+    is_to: str,
+    oos_from: str,
+    oos_to: str,
+    n_combos: int,
+    n_eligible: int,
+    selected_params_json: str | None,
+    is_metric: float | None,
+    oos_metric: float | None,
+    degradation: float | None,
+    is_run_id: int | None,
+    oos_run_id: int | None,
+    distribution_json: str,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO sweep_window(sweep_id, window_index, is_from, is_to, oos_from, oos_to, "
+        "n_combos, n_eligible, selected_params_json, is_metric, oos_metric, degradation, "
+        "is_run_id, oos_run_id, distribution_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            sweep_id,
+            window_index,
+            is_from,
+            is_to,
+            oos_from,
+            oos_to,
+            n_combos,
+            n_eligible,
+            selected_params_json,
+            is_metric,
+            oos_metric,
+            degradation,
+            is_run_id,
+            oos_run_id,
+            distribution_json,
+        ),
+    )
+    conn.commit()
+    return _lastrowid(cur)
+
+
+def get_sweep(conn: sqlite3.Connection, sweep_id: int) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM sweep WHERE id=?", (sweep_id,))
+    row: sqlite3.Row | None = cur.fetchone()
+    return row
+
+
+def list_sweeps(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    cur = conn.execute("SELECT * FROM sweep ORDER BY id DESC")
+    return list(cur.fetchall())
+
+
+def list_sweep_results(conn: sqlite3.Connection, sweep_id: int) -> list[sqlite3.Row]:
+    cur = conn.execute(
+        "SELECT * FROM sweep_result WHERE sweep_id=? ORDER BY window_index, phase DESC, "
+        "combo_index",
+        (sweep_id,),
+    )
+    return list(cur.fetchall())
+
+
+def list_sweep_windows(conn: sqlite3.Connection, sweep_id: int) -> list[sqlite3.Row]:
+    cur = conn.execute(
+        "SELECT * FROM sweep_window WHERE sweep_id=? ORDER BY window_index", (sweep_id,)
+    )
     return list(cur.fetchall())

@@ -198,6 +198,7 @@ class RunCreateIn(BaseModel):
     seed: int = 42
     bars: int = 5000
     dataset_id: str | None = None
+    timeframe: str | None = None
 
 
 class RunSummaryOut(BaseModel):
@@ -382,3 +383,73 @@ class LiveStatusOut(BaseModel):
     stop_requested: bool = False
     equity: float | None = None
     open_trades: int | None = None
+
+
+# --------------------------------------------------------------- sweeps (plan 11)
+
+
+class SweepSummaryOut(BaseModel):
+    id: int
+    kind: str
+    name: str
+    dataset_id: str
+    symbol: str
+    timeframe: str
+    status: str
+    n_combos: int
+    n_runs: int
+    created_at_utc: str
+    finished_at_utc: str | None = None
+    error: str | None = None
+
+
+class SweepResultOut(BaseModel):
+    id: int
+    window_index: int
+    phase: str
+    combo_index: int
+    params: dict[str, Any]
+    run_id: int
+    config_version_id: int
+    metrics: dict[str, Any]
+    metric_value: float | None
+    eligible: bool
+    ineligible_reason: str
+    selected: bool
+    window_from: str
+    window_to: str
+    decision_hash: str
+
+
+class SweepWindowOut(BaseModel):
+    window_index: int
+    is_from: str
+    is_to: str
+    oos_from: str
+    oos_to: str
+    n_combos: int
+    n_eligible: int
+    selected_params: dict[str, Any] | None
+    is_metric: float | None
+    oos_metric: float | None
+    degradation: float | None
+    is_run_id: int | None
+    oos_run_id: int | None
+    distribution: dict[str, Any]
+
+
+class SweepEquityPointOut(BaseModel):
+    """The stitched OOS curve has no `balance`: it is a chained RETURN series across
+    windows, not one account's ledger (see `research.sweep.stitched_equity`)."""
+
+    bar_ts_utc: str
+    equity: float
+
+
+class SweepDetailOut(SweepSummaryOut):
+    spec: dict[str, Any]
+    axes: list[str]
+    selection: dict[str, Any]
+    results: list[SweepResultOut]
+    windows: list[SweepWindowOut]
+    oos_equity: list[SweepEquityPointOut]

@@ -1,0 +1,40 @@
+# Plan 11 ❓1 — TRỤC ƯU TIÊN, chạy riêng trên cửa sổ DÀI.
+#
+# Vì sao tách khỏi `brb_calibration.yaml`: ràng buộc sống-chết của ❓2 là **30 lệnh tối
+# thiểu**, và BRB thưa lệnh tới mức chỉ một cửa sổ nhiều năm mới đủ. Quét một trục trên
+# 8.5 năm rẻ hơn quét 4 trục trên 1 năm, mà lại trả lời đúng câu hỏi calibration.
+name: brb-threshold-eurusd-1h
+dataset: c5f07f66b687b346    # EURUSD 1H thật, 2010-07 -> 2026-07 (data/csv/EURUSD_real_1h.csv)
+symbol: EURUSD
+timeframe: "1H"
+from: "2018-01-01"
+to: "2026-07-01"
+
+# Bốn giá trị đầu là ❓1 nguyên văn. Ba giá trị 0.20/0.30/0.40 là **mở rộng xuống dưới**,
+# thêm sau khi đo thử 1 năm cho thấy điểm cao nhất thực tế đạt được trên EURUSD 1H chỉ là
+# 4/10 = 0.40 — tức toàn bộ dải ❓1 nằm TRÊN trần điểm của dữ liệu và cho 0 lệnh. Vẫn là
+# tham số đã có sẵn trong config, không thêm field nào.
+axes:
+  strategies.breakout.scoring_threshold_ratio: [0.20, 0.30, 0.40, 0.50, 0.55, 0.60, 0.66]
+
+# Config version đang active trong runtime.db là bản CŨ (trước spec_v2: range_period 20,
+# range_width 1.5, session tắt) và không có chi phí. base_patch kéo nền về đúng cấu hình
+# hiện hành + chi phí thật, để con số PF đọc được. Xem docs/decisions.md mục Plan 11.
+base_patch:
+  strategies:
+    breakout:
+      range_period: 30
+  filters:
+    range_width:
+      atr_mult: 2.5
+    session:
+      enabled: true
+  execution:
+    costs:
+      spread_pips: 1.0
+      slippage_pips: 0.5
+
+selection:
+  metric: profit_factor
+  max_drawdown_pct: 20.0
+  min_trades: 30

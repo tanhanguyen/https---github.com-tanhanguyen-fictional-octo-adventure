@@ -25,6 +25,10 @@ FORBIDDEN: dict[str, set[str]] = {
     # `engine` legitimately owns persistence and the alert FORMATTER (bot.notify); what
     # it may not know about is the alert TRANSPORT (bot.alerts) or the web layer.
     "engine": {"alerts", "api"},
+    # Plan 11: `research` drives the engine (sweeps are N ordinary runs) and therefore
+    # sits ABOVE it, beside `api` — never inside it. Importing `api` from here would
+    # invert that and drag a web framework into a batch job.
+    "research": {"api"},
 }
 
 

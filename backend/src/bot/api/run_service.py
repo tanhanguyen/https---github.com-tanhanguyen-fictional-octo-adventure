@@ -49,8 +49,26 @@ from bot.filters.registry import ALL_FILTER_IDS
 from bot.indicators.ema import ema
 from bot.notify import LiveAlerts
 from bot.report import snapshot as chart_snapshot
+from bot.research import sweep as sweep_module
 
 _R = TypeVar("_R")
+
+
+def _sweep_header(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "name": row["name"],
+        "dataset_id": row["dataset_id"],
+        "symbol": row["symbol"],
+        "timeframe": row["timeframe"],
+        "status": row["status"],
+        "n_combos": row["n_combos"],
+        "n_runs": row["n_runs"],
+        "created_at_utc": row["created_at_utc"],
+        "finished_at_utc": row["finished_at_utc"],
+        "error": row["error"],
+    }
 
 #: How many (dataset, config-version) price bundles `_price_frames` keeps resident.
 _BARS_CACHE_MAX = 4
@@ -316,8 +334,16 @@ class RunnerService:
         )
 
     def create_run(
-        self, seed: int = 42, bars: int = 5000, dataset_id: str | None = None
+        self,
+        seed: int = 42,
+        bars: int = 5000,
+        dataset_id: str | None = None,
+        timeframe: str | None = None,
     ) -> dict[str, Any]:
+        if timeframe is not None and timeframe not in TF_DURATION:
+            raise ConfigError(
+                f"unknown timeframe {timeframe!r} -- must be one of {sorted(TF_DURATION)}"
+            )
         with self.lock:
             self._stop_play_locked()
             cfg_row, cfg = self.get_active_config()
@@ -344,6 +370,8 @@ class RunnerService:
 
             for entry in sorted(enabled, key=lambda e: e.symbol):
                 eff_cfg = effective_config_for_symbol(cfg, entry)
+                if timeframe is not None:
+                    eff_cfg = eff_cfg.model_copy(update={"timeframe": timeframe})
                 instrument = self._build_instrument(entry.symbol)
 
                 if single_legacy:
@@ -386,11 +414,15 @@ class RunnerService:
                     bundle = load_bundle_for_dataset(self.conn, did, eff_cfg)
 
                 symbol_datasets[entry.symbol] = did
-                price_feed = Feed(frames=bundle.price)
-                if dxy_frames is None and eff_cfg.symbol_type == "FOREX" and bundle.dxy is not None:
-                    dxy_frames = bundle.dxy
+                price_frames = bundle.price
+                dxy_bundle = bundle.dxy
+                cursor = None
+
+                price_feed = Feed(frames=price_frames)
+                if dxy_frames is None and eff_cfg.symbol_type == "FOREX" and dxy_bundle is not None:
+                    dxy_frames = dxy_bundle
                 symbol_contexts[entry.symbol] = build_symbol_context(
-                    eff_cfg, price_feed, instrument
+                    eff_cfg, price_feed, instrument, cursor=cursor
                 )
 
             dxy_feed = Feed(frames=dxy_frames) if dxy_frames is not None else None
@@ -1019,6 +1051,75 @@ class RunnerService:
             return
         for key in [k for k in self._bars_cache if k[0] == dataset_id]:
             del self._bars_cache[key]
+
+    # ------------------------------------------------------- sweeps (plan 11)
+    @_locked
+    def list_sweeps(self) -> list[dict[str, Any]]:
+        return [_sweep_header(row) for row in repo.list_sweeps(self.conn)]
+
+    @_locked
+    def get_sweep(self, sweep_id: int) -> dict[str, Any]:
+        """Header + every result row + (walk-forward only) the per-window overfit report
+        and the stitched out-of-sample equity curve.
+
+        Read-only: the API never STARTS a sweep. A 108-combo grid is hours of CPU, so it
+        belongs to `python -m bot.cli sweep`, not to an HTTP request that a browser tab
+        would time out on — the web page is where you read the result."""
+        row = repo.get_sweep(self.conn, sweep_id)
+        if row is None:
+            raise KeyError(sweep_id)
+        spec = json.loads(row["spec_json"])
+        results = [
+            {
+                "id": r["id"],
+                "window_index": r["window_index"],
+                "phase": r["phase"],
+                "combo_index": r["combo_index"],
+                "params": json.loads(r["params_json"]),
+                "run_id": r["run_id"],
+                "config_version_id": r["config_version_id"],
+                "metrics": json.loads(r["metrics_json"]),
+                "metric_value": r["metric_value"],
+                "eligible": bool(r["eligible"]),
+                "ineligible_reason": r["ineligible_reason"],
+                "selected": bool(r["selected"]),
+                "window_from": r["window_from"],
+                "window_to": r["window_to"],
+                "decision_hash": r["decision_hash"],
+            }
+            for r in repo.list_sweep_results(self.conn, sweep_id)
+        ]
+        windows = [
+            {
+                "window_index": w["window_index"],
+                "is_from": w["is_from"],
+                "is_to": w["is_to"],
+                "oos_from": w["oos_from"],
+                "oos_to": w["oos_to"],
+                "n_combos": w["n_combos"],
+                "n_eligible": w["n_eligible"],
+                "selected_params": (
+                    json.loads(w["selected_params_json"]) if w["selected_params_json"] else None
+                ),
+                "is_metric": w["is_metric"],
+                "oos_metric": w["oos_metric"],
+                "degradation": w["degradation"],
+                "is_run_id": w["is_run_id"],
+                "oos_run_id": w["oos_run_id"],
+                "distribution": json.loads(w["distribution_json"]),
+            }
+            for w in repo.list_sweep_windows(self.conn, sweep_id)
+        ]
+        oos_run_ids = [w["oos_run_id"] for w in windows if w["oos_run_id"] is not None]
+        return {
+            **_sweep_header(row),
+            "spec": spec,
+            "axes": list(spec.get("axes", {})),
+            "selection": spec.get("selection", {}),
+            "results": results,
+            "windows": windows,
+            "oos_equity": sweep_module.stitched_equity(self.conn, oos_run_ids),
+        }
 
     # ----------------------------------------------------------------- symbols
     def list_symbols(self) -> list[dict[str, str]]:

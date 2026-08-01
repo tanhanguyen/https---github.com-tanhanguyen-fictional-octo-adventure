@@ -1,0 +1,48 @@
+# ⚠️ CHẨN ĐOÁN, KHÔNG PHẢI KẾT LUẬN. Giống hệt `brb_walkforward.yaml` trừ `selection`.
+#
+# Vì sao tồn tại: với ràng buộc ❓2 đã chốt (N ≥ 30) thì trên EURUSD 1H **không cửa sổ IS
+# nào** có tổ hợp đạt — BRB ra ~1.4 lệnh/năm, mỗi cửa sổ 12 tháng chỉ 1-3 lệnh — nên
+# walk-forward "chính thức" chạy trọn vẹn nhưng báo cáo overfit trống trơn (0/14 cửa sổ có
+# OOS). Spec này hạ ràng buộc xuống mức tối thiểu để **cỗ máy walk-forward chạy hết đường**
+# và bảng IS-vs-OOS có số để đọc/nghiệm thu.
+#
+# KHÔNG ĐƯỢC dùng số ra từ đây để chọn tham số: 1-3 lệnh mỗi cửa sổ thì `expectancy_r` của
+# cửa sổ đó là nhiễu thuần tuý. Chính cột "đạt ràng buộc" và cột phân bố trong báo cáo sẽ
+# cho thấy điều đó.
+#
+# `expectancy_r` thay `profit_factor` vì PF là `None` khi cửa sổ không có lệnh thua nào —
+# chuyện thường xảy ra với 1-3 lệnh — và metric không xác định thì bị loại (fail-closed).
+name: brb-walkforward-diagnostic
+dataset: c5f07f66b687b346
+symbol: EURUSD
+timeframe: "1H"
+from: "2022-01-01"
+to: "2026-07-01"
+
+axes:
+  strategies.breakout.scoring_threshold_ratio: [0.20, 0.30, 0.40]
+  strategies.breakout.peak_min_atr_mult: [0.7, 1.0]
+
+base_patch:
+  strategies:
+    breakout:
+      range_period: 30
+  filters:
+    range_width:
+      atr_mult: 2.5
+    session:
+      enabled: true
+  execution:
+    costs:
+      spread_pips: 1.0
+      slippage_pips: 0.5
+
+selection:
+  metric: expectancy_r
+  max_drawdown_pct: 20.0
+  min_trades: 1        # ⚠️ KHÔNG phải ❓2 — xem đầu file
+
+walkforward:
+  is_months: 12
+  oos_months: 3
+  step_months: 3

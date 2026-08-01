@@ -20,6 +20,7 @@ from bot.api.routers import (
     news,
     run,
     runs,
+    sweeps,
     trades,
 )
 from bot.api.run_service import RunnerService, default_db_path
@@ -62,6 +63,7 @@ def create_app(db_path: str | None = None, alerts_db_path: str | None = None) ->
     app.include_router(news.router, prefix="/api", tags=["news"])
     app.include_router(live.router, prefix="/api", tags=["live"])
     app.include_router(alerts.router, prefix="/api", tags=["alerts"])
+    app.include_router(sweeps.router, prefix="/api", tags=["sweeps"])
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

@@ -2,7 +2,7 @@
 # Mirrors bot.config.models.BotConfig. D2: single parameter set, SYMBOL_TYPE=FOREX, TIMEFRAME=1H.
 symbol: EURUSD
 symbol_type: FOREX
-timeframe: "15m"
+timeframe: "1H"
 starting_equity: 500.0
 trading_day_rollover_tz: America/New_York   # C3
 trading_day_rollover_time: "17:00"

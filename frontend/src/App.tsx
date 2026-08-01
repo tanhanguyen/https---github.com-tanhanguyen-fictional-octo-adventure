@@ -8,6 +8,8 @@ import { DatasetsPage } from './pages/DatasetsPage'
 import { DecisionsPage } from './pages/DecisionsPage'
 import { RunReportPage } from './pages/RunReportPage'
 import { RunsPage } from './pages/RunsPage'
+import { SweepDetailPage } from './pages/SweepDetailPage'
+import { SweepsPage } from './pages/SweepsPage'
 import { TradesPage } from './pages/TradesPage'
 
 function App() {
@@ -33,6 +35,9 @@ function App() {
         <NavLink to="/runs" className={({ isActive }) => (isActive ? 'active' : '')}>
           Runs
         </NavLink>
+        <NavLink to="/sweeps" className={({ isActive }) => (isActive ? 'active' : '')}>
+          Sweeps
+        </NavLink>
         <LiveBadge />
         <AlertCenter />
       </nav>
@@ -45,6 +50,8 @@ function App() {
           <Route path="/trades" element={<TradesPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id/report" element={<RunReportPage />} />
+          <Route path="/sweeps" element={<SweepsPage />} />
+          <Route path="/sweeps/:id" element={<SweepDetailPage />} />
         </Routes>
       </main>
     </div>

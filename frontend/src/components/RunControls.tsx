@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api/client'
+import { api, errorDetail } from '../api/client'
 import type { RunOut } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
 
@@ -12,14 +12,19 @@ export function RunControls({ run, onChanged }: Props) {
   const [seed, setSeed] = useState(42)
   const [bars, setBars] = useState(2000)
   const [datasetId, setDatasetId] = useState('')
+  const [timeframe, setTimeframe] = useState('')
   const [busy, setBusy] = useState(false)
   const [lastReason, setLastReason] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const { data: datasets } = usePolling(() => api.listDatasets(), 1000, false)
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
+    setError(null)
     try {
       await fn()
+    } catch (err) {
+      setError(errorDetail(err))
     } finally {
       setBusy(false)
     }
@@ -38,6 +43,17 @@ export function RunControls({ run, onChanged }: Props) {
                 {d.kind === 'csv' ? `${d.symbol} ${d.native_tf} (${d.id})` : `synthetic (${d.id})`}
               </option>
             ))}
+          </select>
+        </label>
+        <label>
+          Khung thời gian{' '}
+          <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}>
+            <option value="">(config mặc định)</option>
+            <option value="15m">15m</option>
+            <option value="1H">1H</option>
+            <option value="4H">4H</option>
+            <option value="1D">1D</option>
+            <option value="1W">1W</option>
           </select>
         </label>
         <label>
@@ -62,7 +78,7 @@ export function RunControls({ run, onChanged }: Props) {
           disabled={busy}
           onClick={() =>
             withBusy(async () => {
-              await api.createRun(seed, bars, datasetId || undefined)
+              await api.createRun(seed, bars, datasetId || undefined, timeframe || undefined)
               onChanged()
             })
           }
@@ -125,6 +141,7 @@ export function RunControls({ run, onChanged }: Props) {
         {run?.is_playing ? ' · PLAYING' : ''}
       </p>
       {lastReason && <p className="muted">Last decision: {lastReason}</p>}
+      {error && <p className="pill loss">{error}</p>}
     </div>
   )
 }

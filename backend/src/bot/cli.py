@@ -364,6 +364,98 @@ def cmd_ab(seed: int, bars: int) -> int:
     return 0
 
 
+def _print_sweep_summary(conn: Any, sweep_id: int, metric: str) -> None:
+    """Plan 11 §2 overfit report, in the terminal. The web page shows the same numbers;
+    printing them here means a sweep run over ssh is still readable without the UI."""
+    from bot.db import repositories as repo
+
+    sweep = repo.get_sweep(conn, sweep_id)
+    assert sweep is not None
+    windows = repo.list_sweep_windows(conn, sweep_id)
+    print(f"\n=== sweep #{sweep_id} '{sweep['name']}' ({sweep['kind']}) — {sweep['status']}")
+    print(f"combos tried per window: {sweep['n_combos']}   runs: {sweep['n_runs']}")
+
+    if not windows:  # plain grid sweep
+        rows = repo.list_sweep_results(conn, sweep_id)
+        ranked = sorted(
+            rows, key=lambda r: (r["metric_value"] is None, -(r["metric_value"] or 0.0))
+        )
+        print(f"\n{'run':>6}  {metric:>10}  {'trades':>6}  {'dd%':>7}  {'ok':>3}  params")
+        for r in ranked:
+            m = json.loads(r["metrics_json"])
+            print(
+                f"{r['run_id']:>6}  {_fmt(r['metric_value'], '.3f'):>10}  "
+                f"{m['n_trades']:>6}  {m['max_drawdown_pct']:>7.2f}  "
+                f"{('yes' if r['eligible'] else 'no'):>3}  {json.loads(r['params_json'])}"
+            )
+        return
+
+    print(f"\n{'w':>2}  {'IS window':<24}{'OOS window':<24}"
+          f"{'eligible':>9}{'IS':>9}{'OOS':>9}{'degr.':>9}  params")
+    for w in windows:
+        dist = json.loads(w["distribution_json"])
+        print(
+            f"{w['window_index']:>2}  "
+            f"{w['is_from'][:10]}..{w['is_to'][:10]}   "
+            f"{w['oos_from'][:10]}..{w['oos_to'][:10]}   "
+            f"{w['n_eligible']:>3}/{w['n_combos']:<5}"
+            f"{_fmt(w['is_metric'], '.3f'):>9}{_fmt(w['oos_metric'], '.3f'):>9}"
+            f"{_fmt(None if w['degradation'] is None else w['degradation'] * 100, '.1f'):>8}%  "
+            f"{w['selected_params_json'] or '(none eligible)'}"
+        )
+        if dist.get("n_defined"):
+            print(
+                f"      phân bố {metric} của TOÀN BỘ {dist['n']} tổ hợp IS: "
+                f"min {dist['min']:.3f} · p25 {dist['p25']:.3f} · median {dist['median']:.3f} "
+                f"· p75 {dist['p75']:.3f} · max {dist['max']:.3f}"
+            )
+
+    graded = [w for w in windows if w["degradation"] is not None]
+    if graded:
+        avg = sum(float(w["degradation"]) for w in graded) / len(graded)
+        print(f"\nsuy giảm IS->OOS trung bình: {avg * 100:.1f}% trên {len(graded)} cửa sổ")
+    traded = [w for w in windows if w["oos_run_id"] is not None]
+    print(
+        f"cửa sổ có tổ hợp đạt ràng buộc: {len(traded)}/{len(windows)}   "
+        f"tổng số tổ hợp đã thử (mẫu số của selection bias): "
+        f"{sum(int(w['n_combos']) for w in windows)}"
+    )
+
+
+def cmd_sweep(config_path: str, workers: int, assume_yes: bool, db: str | None) -> int:
+    from bot.db.connection import connect_and_migrate
+    from bot.research.spec import load_spec
+    from bot.research.sweep import run_sweep
+
+    spec = load_spec(Path(config_path))
+    db_path = db or _default_db_path()
+    conn = connect_and_migrate(db_path)
+    try:
+        sweep_id = run_sweep(db_path, spec, workers=workers, assume_yes=assume_yes, conn=conn)
+        _print_sweep_summary(conn, sweep_id, spec.selection.metric)
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_walkforward(config_path: str, workers: int, assume_yes: bool, db: str | None) -> int:
+    from bot.db.connection import connect_and_migrate
+    from bot.research.spec import load_spec
+    from bot.research.walkforward import run_walkforward
+
+    spec = load_spec(Path(config_path))
+    db_path = db or _default_db_path()
+    conn = connect_and_migrate(db_path)
+    try:
+        sweep_id = run_walkforward(
+            db_path, spec, workers=workers, assume_yes=assume_yes, conn=conn
+        )
+        _print_sweep_summary(conn, sweep_id, spec.selection.metric)
+    finally:
+        conn.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -403,6 +495,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     import_news.add_argument("--path", type=str, required=True)
 
+    for name, helptext in (
+        ("sweep", "Plan 11: run a parameter grid, one registry run per combo"),
+        ("walkforward", "Plan 11: walk-forward (sweep on IS, one run on OOS) + overfit report"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("--config", type=str, required=True, help="Path to the sweep YAML spec")
+        p.add_argument(
+            "--workers", type=int, default=1, help="Processes (each combo gets a temp DB)"
+        )
+        p.add_argument("--yes", action="store_true", help="Skip the >200-run cost guard")
+        p.add_argument("--db", type=str, default=None, help="Target DB (default: backend/data)")
+
     args = parser.parse_args(argv)
     if args.command == "replay":
         if args.dataset is not None:
@@ -416,6 +520,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import_news(args.path)
     if args.command == "live":
         return cmd_live(args.symbol, args.db, args.testnet, args.iterations)
+    if args.command == "sweep":
+        return cmd_sweep(args.config, args.workers, args.yes, args.db)
+    if args.command == "walkforward":
+        return cmd_walkforward(args.config, args.workers, args.yes, args.db)
     return 1
 
 
