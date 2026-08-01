@@ -2,6 +2,55 @@ import { useState } from 'react'
 import { api, errorDetail } from '../api/client'
 import { FilterConfigPanel } from '../components/FilterConfigPanel'
 import { usePolling } from '../hooks/usePolling'
+import type { ConfigOut } from '../api/types'
+
+/** docs/spec_v2.md BRB toggle: `strategies.breakout.require_second_breakout` lives
+ * outside `filters.*`, so the schema-driven FilterConfigPanel never renders it. */
+function BreakoutModeCard({ config, onChanged }: { config: ConfigOut; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const requireSecondBreakout = Boolean(
+    config.config.strategies?.breakout?.require_second_breakout,
+  )
+
+  async function setMode(value: boolean) {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.patchConfig({ strategies: { breakout: { require_second_breakout: value } } })
+      onChanged()
+    } catch (e) {
+      setError(errorDetail(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Chế độ Breakout: BR vs BRB</h2>
+      <p className="muted">
+        BRB (bật) yêu cầu 2 lần breakout (Breakout → Retest → Breakout) trước khi vào lệnh —
+        chặt hơn, ít lệnh hơn. BR (tắt) là v1.2: chỉ cần 1 lần breakout + retest.
+      </p>
+      <div className="toolbar">
+        <label>
+          <input
+            type="checkbox"
+            checked={requireSecondBreakout}
+            disabled={busy}
+            onChange={(e) => void setMode(e.target.checked)}
+          />
+          Yêu cầu breakout lần 2 (BRB)
+        </label>
+        <span className="muted">
+          Hiện tại: {requireSecondBreakout ? 'BRB (2 lần breakout)' : 'BR (1 lần breakout)'}
+        </span>
+      </div>
+      {error && <p className="pill loss">{error}</p>}
+    </div>
+  )
+}
 
 function NewsEventsCard() {
   // Plan 06 §4: show UPCOMING events relative to the active run's clock (its last
@@ -106,7 +155,10 @@ export function ConfigPage() {
   return (
     <div className="grid" style={{ gap: 16 }}>
       {schema && config ? (
-        <FilterConfigPanel schema={schema} config={config} onChanged={refreshAll} />
+        <>
+          <BreakoutModeCard config={config} onChanged={refreshAll} />
+          <FilterConfigPanel schema={schema} config={config} onChanged={refreshAll} />
+        </>
       ) : (
         <p className="muted">Đang tải cấu hình...</p>
       )}
